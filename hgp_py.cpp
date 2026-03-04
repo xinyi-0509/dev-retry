@@ -63,7 +63,9 @@ static inline Vector3d3 to_vec3d3(const std::vector<std::vector<std::vector<std:
     Vector3d3 r; r.reserve(vsss.size());
     for(auto& vss:vsss) r.push_back(to_vec3d2(vss)); return r;
 }
-
+static inline VectorPI1 to_pi1(const std::vector<std::pair<int,int>>& v) { return v; }
+static inline std::vector<std::pair<int,int>> from_pi1(const VectorPI1& v) { return v; }
+static inline VectorPB1 to_pb1(const std::vector<std::pair<bool,bool>>& v) { return v; }
 // ============================================================
 PYBIND11_MODULE(hgp_py, m) {
     m.doc() = "pybind11 bindings for libhgp — 完整版";
@@ -1618,3 +1620,4 @@ PYBIND11_MODULE(hgp_py, m) {
             return std::string(buf);
         }, py::arg("multi_boundary"), py::arg("inside_point"), py::arg("full_path"),
         "按多条边界裁剪网格。返回输出文件路径字符串。");
+}

@@ -1,15 +1,20 @@
 cmake_minimum_required(VERSION 3.16)
+
+# CMP0091 必须在 project() 之前声明！
+cmake_policy(SET CMP0091 NEW)
+
 project(libhgp)
 # 显式保证所有目标使用 /MD（Release）或 /MDd（Debug）
 #与 x64-windows-static-md triplet 保持一致
 if(MSVC)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL$<$<CONFIG:Debug>:Debug>")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
 
 if(MSVC)
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+    add_compile_options(/utf-8)
 endif()
 
 option(USE_LOCAL_LIBS "Use local library" ON)
@@ -60,7 +65,6 @@ set_target_properties(libhgp_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(libhgp_static
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
-    PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/local_libs
 )
 

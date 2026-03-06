@@ -1,0 +1,10 @@
+^D:\GP\DEV-RETRY\BUILD\CMAKEFILES\4C6F6BF97503B3DF6799E19714477ED9\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GP/dev-retry -BD:/GP/dev-retry/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file D:/GP/dev-retry/build/libhgp.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

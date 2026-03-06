@@ -1234,7 +1234,7 @@ extern "C" LIBHGP_EXPORT void HGP_3D_Distance_Point_Mesh(const char* path, const
 * @ners : A vector to store the nearest points on the mesh for each input point.
 * Return       : void
 **********************************************************/
-extern "C" LIBHGP_EXPORT void HGP_3D_Nearest_Point_Mesh(const char* path, const Vector3d1 & ves, Vector3d1 & ners)
+extern "C" LIBHGP_EXPORT void HGP_3D_Neareast_Point_Mesh(const char* path, const Vector3d1 & ves, Vector3d1 & ners)
 {
 	std::cout << "HGP_3D_Nearest_Point_Mesh" << std::endl;
 

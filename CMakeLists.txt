@@ -69,7 +69,7 @@ target_include_directories(libhgp_static
 )
 
 target_link_libraries(libhgp_static
-    PRIVATE
+    PUBLIC
         CGAL::CGAL
         CGAL::CGAL_Core
 )
@@ -82,7 +82,7 @@ if(BUILD_PYTHON_BINDINGS)
     
     # 链接静态库
     target_link_libraries(hgp_py PRIVATE libhgp_static)
-    
+
     # ✅ 可选但推荐：显式设置符号可见性
     set_target_properties(hgp_py PROPERTIES
         CXX_VISIBILITY_PRESET hidden

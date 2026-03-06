@@ -1,7 +1,4 @@
 // hgp_py.cpp — 完整绑定 libhgp.h 所有函数
-// 在上一版基础上，补全所有遗漏函数
-// 辅助函数定义不变，此处仅展示 PYBIND11_MODULE 中的新增绑定
-
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/numpy.h>
@@ -10,7 +7,7 @@
 namespace py = pybind11;
 
 // ============================================================
-// 辅助函数（与前一版完全相同，集中放在最前面）
+// 辅助类型构造函数
 // ============================================================
 static inline Vector2d  to_vec2d (const std::vector<double>& v) {
     if (v.size()<2) throw std::runtime_error("need >=2 doubles for Vector2d");
@@ -89,34 +86,13 @@ PYBIND11_MODULE(hgp_py, m) {
         }, py::arg("n"), py::arg("str"), py::arg("char_"), "调试函数，输出 PGL 信息。");
 
     // ════════════════════════════════════════════════════
-    // ── HGP2D（之前已绑定的 Distance/Location/Sampling/Intersection
-    //          此处只补充遗漏部分）
+    // ── HGP2D
     // ════════════════════════════════════════════════════
+    m.def("HGP_2D_Square_Regular_Sampling_C1",
+        [](double d) -> std::vector<std::vector<double>> {
+            return from_vec2d1(HGP_2D_Square_Regular_Sampling_C1(d));
+        }, py::arg("d"), "正方形域规则采样C1。");
 
-    // ── 已在上一版绑定（跳过，不重复）：
-    //   HGP_2D_Distance_Point_Point / Line / Segment
-    //   HGP_2D_Distance_Segment_Segment
-    //   HGP_2D_Location_Point_Polygon / Points_Polygon
-    //   HGP_2D_Polygon_Dart/Regular/Square_Sampling C1/C2/C3
-    //   HGP_2D_Distance_Point_Polygon
-    //   HGP_2D_Intersection_Segment_Segment / Line_Line
-    //   HGP_2D_Polygon_Is_Clockwise_Oriented
-    //   HGP_2D_Polygon_Area
-    //   HGP_2D_Polygon_One_Offsets
-    //   HGP_2D_Nearest_Point_Polygon_C1
-    //   HGP_2d_Polygon_Boundingbox
-    //   HGP_2D_Convex_Hulls
-    //   (3D) HGP_3D_Distance_Point_Point/Segment/Plane_Fitting
-    //        HGP_3D_Intersection_Segment_Plane
-    //        HGP_3D_Projection_Point_Plane_C1
-    //        HGP_3D_One_Triangle_Area
-    //        HGP_3D_Mesh_Curvature_C1
-    //   (LGP) LGP_Variance_Double / IncreaseVector / ShuffleVector
-    //         LGP_String2Double / LGP_StringContain
-
-    // ── 新增 HGP2D ──────────────────────────────────────
-
-    // HGP_2D_Square_Regular_Sampling_C2 / C3（前版漏掉）
     m.def("HGP_2D_Square_Regular_Sampling_C2",
         [](double d) -> std::pair<std::vector<std::vector<double>>,
                                    std::vector<std::pair<int,int>>> {
@@ -429,7 +405,7 @@ PYBIND11_MODULE(hgp_py, m) {
         }, "保守图像网格分解C2。返回 (image, boundaries)。");
 
     // ════════════════════════════════════════════════════
-    // ── HGP3D（补充遗漏部分）
+    // ── HGP3D
     // ════════════════════════════════════════════════════
 
     // HGP_3D_Plane_Point_Projection（out: result）
@@ -1620,4 +1596,224 @@ PYBIND11_MODULE(hgp_py, m) {
             return std::string(buf);
         }, py::arg("multi_boundary"), py::arg("inside_point"), py::arg("full_path"),
         "按多条边界裁剪网格。返回输出文件路径字符串。");
+        // ════════════════════════════════════════════════════
+   
+    // ── 补全：缺失的 HGP 函数
+    // ════════════════════════════════════════════════════
+    // ── HGP2D: Distance ─────────────────────────────────
+
+    m.def("HGP_2D_Distance_Point_Point",
+        [](const std::vector<double>& p0, const std::vector<double>& p1) -> double {
+            return HGP_2D_Distance_Point_Point(to_vec2d(p0), to_vec2d(p1));
+        }, py::arg("p_0"), py::arg("p_1"), "2D两点距离。");
+
+    m.def("HGP_2D_Distance_Point_Line",
+        [](const std::vector<double>& v,
+           const std::vector<double>& l0, const std::vector<double>& l1) -> double {
+            return HGP_2D_Distance_Point_Line(to_vec2d(v), to_vec2d(l0), to_vec2d(l1));
+        }, py::arg("v"), py::arg("l_0"), py::arg("l_1"), "2D点到直线距离。");
+
+    m.def("HGP_2D_Distance_Point_Segment",
+        [](const std::vector<double>& v,
+           const std::vector<double>& s0, const std::vector<double>& s1) -> double {
+            return HGP_2D_Distance_Point_Segment(to_vec2d(v), to_vec2d(s0), to_vec2d(s1));
+        }, py::arg("v"), py::arg("s_0"), py::arg("s_1"), "2D点到线段距离。");
+
+    m.def("HGP_2D_Distance_Segment_Segment",
+        [](const std::vector<double>& s0, const std::vector<double>& s1,
+           const std::vector<double>& e0, const std::vector<double>& e1) -> double {
+            return HGP_2D_Distance_Segment_Segment(
+                to_vec2d(s0), to_vec2d(s1), to_vec2d(e0), to_vec2d(e1));
+        }, py::arg("s_0"), py::arg("s_1"), py::arg("e_0"), py::arg("e_1"),
+        "2D两线段距离。");
+
+    m.def("HGP_2D_Distance_Point_Polygon",
+        [](const std::vector<double>& p,
+           const std::vector<std::vector<double>>& py_) -> double {
+            return HGP_2D_Distance_Point_Polygon(to_vec2d(p), to_vec2d1(py_));
+        }, py::arg("p"), py::arg("py"), "2D点到多边形距离。");
+
+    // ── HGP2D: Location ─────────────────────────────────
+
+    m.def("HGP_2D_Location_Point_Polygon",
+        [](const std::vector<double>& p,
+           const std::vector<std::vector<double>>& py_) -> bool {
+            return HGP_2D_Location_Point_Polygon(to_vec2d(p), to_vec2d1(py_));
+        }, py::arg("p"), py::arg("py"), "判断2D点是否在多边形内。");
+
+    m.def("HGP_2D_Location_Points_Polygon",
+        [](const std::vector<std::vector<double>>& ps,
+           const std::vector<std::vector<double>>& py_) -> bool {
+            return HGP_2D_Location_Points_Polygon(to_vec2d1(ps), to_vec2d1(py_));
+        }, py::arg("ps"), py::arg("py"), "判断2D点集是否均在多边形内。");
+
+    // ── HGP2D: Sampling ─────────────────────────────────
+
+    m.def("HGP_2D_Polygon_Dart_Sampling",
+        [](const std::vector<std::vector<double>>& py_, double d, int total_iter)
+           -> std::vector<std::vector<double>> {
+            Vector2d1 sampling_points;
+            HGP_2D_Polygon_Dart_Sampling(to_vec2d1(py_), d, sampling_points, total_iter);
+            return from_vec2d1(sampling_points);
+        }, py::arg("py"), py::arg("d"), py::arg("total_iter"),
+        "多边形 dart 采样。d 为包围盒对角线百分比。返回采样点列表。");
+
+    m.def("HGP_2D_Polygon_Regular_Sampling_C1",
+        [](const std::vector<std::vector<double>>& py_, double d)
+           -> std::vector<std::vector<double>> {
+            return from_vec2d1(HGP_2D_Polygon_Regular_Sampling_C1(to_vec2d1(py_), d));
+        }, py::arg("py"), py::arg("d"), "多边形规则采样C1。");
+
+    m.def("HGP_2D_Polygon_Regular_Sampling_C2",
+        [](const std::vector<std::vector<double>>& py_, double d)
+           -> std::pair<std::vector<std::vector<double>>,
+                        std::vector<std::pair<int,int>>> {
+            VectorPI1 nb;
+            auto pts = HGP_2D_Polygon_Regular_Sampling_C2(to_vec2d1(py_), d, nb);
+            return {from_vec2d1(pts), from_pi1(nb)};
+        }, py::arg("py"), py::arg("d"),
+        "多边形规则采样C2。返回 (采样点, 邻居对列表)。");
+
+    m.def("HGP_2D_Polygon_Regular_Sampling_C3",
+        [](const std::vector<std::vector<double>>& py_, double d, bool compute_neighbors)
+           -> std::pair<std::vector<std::vector<double>>,
+                        std::vector<std::pair<int,int>>> {
+            VectorPI1 nb;
+            auto pts = HGP_2D_Polygon_Regular_Sampling_C3(
+                to_vec2d1(py_), d, nb, compute_neighbors);
+            return {from_vec2d1(pts), from_pi1(nb)};
+        }, py::arg("py"), py::arg("d"), py::arg("compute_neighbors"),
+        "多边形规则采样C3。返回 (采样点, 邻居对列表)。");
+
+    // ── HGP2D: Intersection ─────────────────────────────
+
+    m.def("HGP_2D_Intersection_Segment_Segment",
+        [](const std::vector<double>& s0s, const std::vector<double>& s0e,
+           const std::vector<double>& s1s, const std::vector<double>& s1e)
+           -> std::pair<bool, std::vector<double>> {
+            Vector2d inter;
+            bool hit = HGP_2D_Intersection_Segment_Segment(
+                to_vec2d(s0s), to_vec2d(s0e),
+                to_vec2d(s1s), to_vec2d(s1e), inter);
+            return {hit, from_vec2d(inter)};
+        }, py::arg("s_0_s"), py::arg("s_0_e"), py::arg("s_1_s"), py::arg("s_1_e"),
+        "2D两线段求交。返回 (是否相交, 交点[x,y])。");
+
+    m.def("HGP_2D_Intersection_Line_Line",
+        [](const std::vector<double>& s0s, const std::vector<double>& s0e,
+           const std::vector<double>& s1s, const std::vector<double>& s1e)
+           -> std::pair<bool, std::vector<double>> {
+            Vector2d inter;
+            bool hit = HGP_2D_Intersection_Line_Line(
+                to_vec2d(s0s), to_vec2d(s0e),
+                to_vec2d(s1s), to_vec2d(s1e), inter);
+            return {hit, from_vec2d(inter)};
+        }, py::arg("s_0_s"), py::arg("s_0_e"), py::arg("s_1_s"), py::arg("s_1_e"),
+        "2D两直线求交。返回 (是否相交, 交点[x,y])。");
+
+    // ── HGP2D: Polygon properties ───────────────────────
+
+    m.def("HGP_2D_Polygon_Is_Clockwise_Oriented",
+        [](const std::vector<std::vector<double>>& ps) -> bool {
+            return HGP_2D_Polygon_Is_Clockwise_Oriented(to_vec2d1(ps));
+        }, py::arg("ps"), "判断2D多边形是否为顺时针方向。");
+
+    m.def("HGP_2D_Polygon_Area",
+        [](const std::vector<std::vector<double>>& py_) -> double {
+            return HGP_2D_Polygon_Area(to_vec2d1(py_));
+        }, py::arg("py"), "2D多边形面积。");
+
+    m.def("HGP_2D_Polygon_One_Offsets",
+        [](const std::vector<std::vector<double>>& poly, double d)
+           -> std::vector<std::vector<std::vector<double>>> {
+            Vector2d2 offset_polys;
+            HGP_2D_Polygon_One_Offsets(to_vec2d1(poly), d, offset_polys);
+            return from_vec2d2(offset_polys);
+        }, py::arg("poly"), py::arg("d"),
+        "单个多边形偏置（offset）。返回偏置后多边形列表。");
+
+    m.def("HGP_2D_Nearest_Point_Polygon_C1",
+        [](const std::vector<double>& v,
+           const std::vector<std::vector<double>>& poly) -> std::vector<double> {
+            return from_vec2d(HGP_2D_Nearest_Point_Polygon_C1(to_vec2d(v), to_vec2d1(poly)));
+        }, py::arg("v"), py::arg("poly"),
+        "多边形上距 v 最近的点（C1）。返回 [x,y]。");
+
+    m.def("HGP_2d_Polygon_Boundingbox",
+        [](const std::vector<std::vector<double>>& ps)
+           -> std::pair<std::vector<double>, std::vector<double>> {
+            Vector2d mn, mx;
+            HGP_2d_Polygon_Boundingbox(to_vec2d1(ps), mn, mx);
+            return {from_vec2d(mn), from_vec2d(mx)};
+        }, py::arg("ps"), "2D多边形包围盒。返回 (min_corner[x,y], max_corner[x,y])。");
+
+    m.def("HGP_2D_Convex_Hulls",
+        [](const std::vector<std::vector<double>>& vec)
+           -> std::vector<std::vector<double>> {
+            Vector2d1 hull;
+            HGP_2D_Convex_Hulls(to_vec2d1(vec), hull);
+            return from_vec2d1(hull);
+        }, py::arg("vec"), "2D点集凸包。返回凸包顶点列表。");
+
+    // ── HGP3D: 补全缺失函数 ──────────────────────────────
+
+    m.def("HGP_3D_Distance_Point_Point",
+        [](const std::vector<double>& v0, const std::vector<double>& v1) -> double {
+            return HGP_3D_Distance_Point_Point(to_vec3d(v0), to_vec3d(v1));
+        }, py::arg("v_0"), py::arg("v_1"), "3D两点距离。");
+
+    m.def("HGP_3D_Distance_Point_Segment",
+        [](const std::vector<double>& p,
+           const std::vector<double>& ss, const std::vector<double>& se) -> double {
+            return HGP_3D_Distance_Point_Segment(to_vec3d(p), to_vec3d(ss), to_vec3d(se));
+        }, py::arg("p"), py::arg("s_s"), py::arg("s_e"), "3D点到线段距离。");
+
+    m.def("HGP_3D_Plane_Fitting",
+        [](const std::vector<std::vector<double>>& points)
+           -> std::pair<std::vector<double>, std::vector<double>> {
+            Vector3d plane_p, plane_n;
+            HGP_3D_Plane_Fitting(to_vec3d1(points), plane_p, plane_n);
+            return {from_vec3d(plane_p), from_vec3d(plane_n)};
+        }, py::arg("points"),
+        "3D点集平面拟合。返回 (平面点[x,y,z], 平面法向[x,y,z])。");
+
+    m.def("HGP_3D_Intersection_Segment_Plane",
+        [](const std::vector<double>& ss, const std::vector<double>& se,
+           const std::vector<double>& pp, const std::vector<double>& pn)
+           -> std::pair<bool, std::vector<double>> {
+            Vector3d inter;
+            bool hit = HGP_3D_Intersection_Segment_Plane(
+                to_vec3d(ss), to_vec3d(se), to_vec3d(pp), to_vec3d(pn), inter);
+            return {hit, from_vec3d(inter)};
+        }, py::arg("s_s"), py::arg("s_e"), py::arg("plane_p"), py::arg("plane_n"),
+        "3D线段与平面求交。返回 (是否相交, 交点[x,y,z])。");
+
+    m.def("HGP_3D_Projection_Point_Plane_C1",
+        [](const std::vector<double>& p,
+           const std::vector<double>& pp, const std::vector<double>& pn)
+           -> std::vector<double> {
+            return from_vec3d(HGP_3D_Projection_Point_Plane_C1(
+                to_vec3d(p), to_vec3d(pp), to_vec3d(pn)));
+        }, py::arg("p"), py::arg("plane_p"), py::arg("plane_n"),
+        "3D点投影到平面（C1，点+法向定义平面）。返回投影点 [x,y,z]。");
+
+    m.def("HGP_3D_One_Triangle_Area",
+        [](const std::vector<double>& v0,
+           const std::vector<double>& v1,
+           const std::vector<double>& v2) -> double {
+            return HGP_3D_One_Triangle_Area(to_vec3d(v0), to_vec3d(v1), to_vec3d(v2));
+        }, py::arg("v_0"), py::arg("v_1"), py::arg("v_2"), "单个3D三角形面积。");
+
+    m.def("HGP_3D_Mesh_Curvature_C1",
+        [](const std::vector<std::vector<double>>& vecs,
+           const std::vector<int>& f0,
+           const std::vector<int>& f1,
+           const std::vector<int>& f2)
+           -> std::pair<std::vector<double>, std::vector<double>> {
+            Vector1d1 max_curs, min_curs;
+            HGP_3D_Mesh_Curvature_C1(to_vec3d1(vecs), f0, f1, f2, max_curs, min_curs);
+            return {max_curs, min_curs};
+        }, py::arg("vecs"),
+           py::arg("face_id_0"), py::arg("face_id_1"), py::arg("face_id_2"),
+        "网格曲率C1（分量传参）。返回 (max_curs, min_curs)。");
 }

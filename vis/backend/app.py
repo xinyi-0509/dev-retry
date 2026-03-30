@@ -271,7 +271,14 @@ def geodesic_path(req: GeodesicRequest):
     path_points = hgp_py.HGP_Shortest_Geodesic_Path_C3(
         mesh_path, req.source, req.target
     )
-    return {"path": [[p[0], p[1], p[2]] for p in path_points]}
+    # 同时计算距离数值（调用独立的 HGP_Geodesic_Distance）
+    dist = hgp_py.HGP_Geodesic_Distance(
+        mesh_path, req.source, req.target
+    )
+    return {
+        "path":     [[p[0], p[1], p[2]] for p in path_points],
+        "distance": dist,
+    }
 
 # ════════════════════════════════════════════════
 # 接口 5：网格切片
@@ -486,9 +493,8 @@ def polygon_union_2d(req: TwoPolygonRequest):
     输入：两个 2D 多边形
     输出：布尔并集后的多边形组
     """
-    union_polys = []
-    area = hgp_py.HGP_2D_Two_Polygons_Union(
-        req.polygon_0, req.polygon_1, union_polys
+    area, union_polys = hgp_py.HGP_2D_Two_Polygons_Union(
+    req.polygon_0, req.polygon_1
     )
     return {
         "area":     area,

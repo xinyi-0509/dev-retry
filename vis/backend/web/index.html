@@ -59,12 +59,14 @@
     <button onclick="runCurvature()">计算曲率着色</button>
   </div>
 
-  <!-- 算法 4：测地线路径 -->
+  <!-- 算法 4：最短测地路径 + 距离 -->
   <div class="section">
-    <h3>📏 最短测地路径</h3>
+    <h3>📏 最短测地路径 & 距离</h3>
     <label>点击网格选择起点/终点</label>
     <button onclick="startGeodesicPick()">选择起/终点</button>
-    <button onclick="runGeodesic()">计算测地路径</button>
+    <button onclick="runGeodesic()">计算路径 & 距离</button>
+    <div id="geodesic-result"
+         style="margin-top:8px; font-size:12px; color:#6ee7b7; min-height:16px;"></div>
   </div>
 
   <!-- 算法 5：网格切片 -->
@@ -126,14 +128,7 @@
     <button onclick="runSubdivide()">细分一步</button>
   </div>
 
-  <!-- 算法 12：测地线距离 -->
-  <div class="section">
-    <h3>📐 测地线距离</h3>
-    <label>先选择起/终点（同测地路径）</label>
-    <button onclick="runGeodesicDistance()">计算距离数值</button>
-  </div>
-
-  <!-- 算法 13：2D 布尔并集 -->
+  <!-- 算法 12：2D 布尔并集 -->
   <div class="section">
     <h3>⊕ 2D 多边形并集</h3>
     <label>先用 2D 模式各画一个多边形</label>
@@ -439,7 +434,7 @@ window.runGeodesic = async () => {
     status('请先选择起/终点'); return;
   }
   if (!currentMeshId) { status('请先加载一个网格'); return; }
-  status('计算测地路径中...');
+  status('计算��地路径中...');
   try {
     const res  = await fetch(`${API}/geodesic_path`, {
       method:  'POST',
@@ -452,14 +447,21 @@ window.runGeodesic = async () => {
     });
     const data = await res.json();
 
-    const pts = data.path.map(
-      p => new THREE.Vector3(p[0], p[1], p[2])
-    );
+    // 渲染黄色测地路径折线
+    const pts = data.path.map(p => new THREE.Vector3(p[0], p[1], p[2]));
     scene.add(new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(pts),
       new THREE.LineBasicMaterial({ color: 0xfbbf24 })
     ));
-    status(`测地路径：${pts.length} 个节点`);
+
+    // 在侧边栏面板内展示距离数值
+    const distStr = data.distance !== undefined
+      ? data.distance.toFixed(6)
+      : '—';
+    document.getElementById('geodesic-result').textContent =
+      `📐 测地距离：${distStr}`;
+
+    status(`测地路径：${pts.length} 个节点，距离 = ${distStr}`);
   } catch(e) { status('错误：' + e.message); }
 };
 
@@ -572,157 +574,105 @@ window.run2DConvexHull = async () => {
 };
 
 // ════════════════════════════════════════════════
-// 算法 7：网格边界提取
+// 算法 7-12：新增功能实现（边界/法向/包围盒/采样/细分/测地距离）
 // ════════════════════════════════════════════════
+
 window.runMeshBoundary = async () => {
   if (!currentMeshId) { status('请先加载一个网格'); return; }
   status('提取边界中...');
   try {
     const res  = await fetch(`${API}/mesh_boundary`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mesh_id: currentMeshId,
-                             input_points: [] }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mesh_id: currentMeshId, input_points: [] }),
     });
     const data = await res.json();
     const colors = [0xf87171, 0xfbbf24, 0x34d399, 0x60a5fa];
     data.boundaries.forEach((loop, idx) => {
-      const pts = loop.map(p => new THREE.Vector3(p[0],p[1],p[2]));
+      const pts = loop.map(p => new THREE.Vector3(p[0], p[1], p[2]));
       if (pts.length < 2) return;
-      pts.push(pts[0]);   // 闭合
+      pts.push(pts[0]);
       scene.add(new THREE.Line(
         new THREE.BufferGeometry().setFromPoints(pts),
-        new THREE.LineBasicMaterial({
-          color: colors[idx % colors.length], linewidth: 2
-        })
+        new THREE.LineBasicMaterial({ color: colors[idx % colors.length] })
       ));
     });
-    status(`边界提取：${data.boundaries.length} 条轮廓`);
+    status(`边界：${data.boundaries.length} 条轮廓`);
   } catch(e) { status('错误：' + e.message); }
 };
 
-// ════════════════════════════════════════════════
-// 算法 8：顶点法向量（箭头可视化）
-// ════════════════════════════════════════════════
 window.runMeshNormals = async () => {
   if (!currentMeshId) { status('请先加载一个网格'); return; }
-  const arrowLen = parseFloat(
-    document.getElementById('normal-len').value
-  );
+  const arrowLen = parseFloat(document.getElementById('normal-len').value);
   status('计算法向量中...');
   try {
     const res  = await fetch(`${API}/mesh_normals`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mesh_id: currentMeshId,
-                             input_points: [] }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mesh_id: currentMeshId, input_points: [] }),
     });
     const data = await res.json();
-
-    // 每 N 个顶点取一个箭头，防止太密
     const step = Math.max(1, Math.floor(data.vertices.length / 200));
-    const positions = [], colors_arr = [];
-
+    const positions = [], colorsArr = [];
     for (let i = 0; i < data.vertices.length; i += step) {
-      const v = data.vertices[i];
-      const n = data.normals[i];
-      // 线段：起点 → 起点 + 法向 * arrowLen
-      positions.push(v[0], v[1], v[2]);
-      positions.push(
-        v[0] + n[0]*arrowLen,
-        v[1] + n[1]*arrowLen,
-        v[2] + n[2]*arrowLen
-      );
-      // 起点青色，终点白色
-      colors_arr.push(0, 1, 1, 1, 1, 1);
+      const v = data.vertices[i], n = data.normals[i];
+      positions.push(v[0], v[1], v[2],
+        v[0]+n[0]*arrowLen, v[1]+n[1]*arrowLen, v[2]+n[2]*arrowLen);
+      colorsArr.push(0, 1, 1, 1, 1, 1);
     }
-
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position',
-      new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('color',
-      new THREE.Float32BufferAttribute(colors_arr, 3));
-
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('color',    new THREE.Float32BufferAttribute(colorsArr, 3));
     scene.add(new THREE.LineSegments(geo,
       new THREE.LineBasicMaterial({ vertexColors: true })
     ));
-    status(`法向量：渲染了 ${positions.length/6} 条箭头`);
+    status(`法向量：${positions.length/6} 条箭头`);
   } catch(e) { status('错误：' + e.message); }
 };
 
-// ════════════════════════════════════════════════
-// 算法 9：包围盒（线框 Box）
-// ════════════════════════════════════════════════
 window.runMeshBBox = async () => {
   if (!currentMeshId) { status('请先加载一个网格'); return; }
   status('计算包围盒...');
   try {
     const res  = await fetch(`${API}/mesh_bbox`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mesh_id: currentMeshId,
-                             input_points: [] }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mesh_id: currentMeshId, input_points: [] }),
     });
     const data = await res.json();
     const mn = data.min_corner, mx = data.max_corner;
-
-    // 用 Three.js Box3Helper 渲染包围盒
     const box = new THREE.Box3(
       new THREE.Vector3(mn[0], mn[1], mn[2]),
       new THREE.Vector3(mx[0], mx[1], mx[2])
     );
-    const helper = new THREE.Box3Helper(box, 0xfbbf24);
-    scene.add(helper);
-
-    const sx = (mx[0]-mn[0]).toFixed(3);
-    const sy = (mx[1]-mn[1]).toFixed(3);
-    const sz = (mx[2]-mn[2]).toFixed(3);
-    status(`包围盒：${sx} × ${sy} × ${sz}`);
+    scene.add(new THREE.Box3Helper(box, 0xfbbf24));
+    status(`包围盒：${(mx[0]-mn[0]).toFixed(3)} × ${(mx[1]-mn[1]).toFixed(3)} × ${(mx[2]-mn[2]).toFixed(3)}`);
   } catch(e) { status('错误：' + e.message); }
 };
 
-// ════════════════════════════════════════════════
-// 算法 10：表面均匀采样
-// ════════════════════════════════════════════════
 window.runMeshSampling = async () => {
   if (!currentMeshId) { status('请先加载一个网格'); return; }
-  const density = parseFloat(
-    document.getElementById('sample-density').value
-  );
+  const density = parseFloat(document.getElementById('sample-density').value);
   status('表面采样中...');
   try {
     const res  = await fetch(`${API}/mesh_sampling`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mesh_id: currentMeshId,
-                             density }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mesh_id: currentMeshId, density }),
     });
     const data = await res.json();
-
     const flat = data.points.flatMap(p => [p[0], p[1], p[2]]);
     const geo  = new THREE.BufferGeometry();
-    geo.setAttribute('position',
-      new THREE.Float32BufferAttribute(flat, 3));
-
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
     scene.add(new THREE.Points(geo,
-      new THREE.PointsMaterial({
-        color: 0x00ffff, size: 0.04
-      })
+      new THREE.PointsMaterial({ color: 0x00ffff, size: 0.04 })
     ));
     status(`表面采样：${data.points.length} 个点`);
   } catch(e) { status('错误：' + e.message); }
 };
 
-// ════════════════════════════════════════════════
-// 算法 11：Loop 细分
-// ════════════════════════════════════════════════
 window.runSubdivide = async () => {
   if (!currentMeshData) { status('请先加载一个网格'); return; }
   status('Loop 细分中...');
   try {
     const res  = await fetch(`${API}/subdivide`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         vertices:   currentMeshData.vertices_nested,
         face_id_0:  currentMeshData.face_id_0,
@@ -733,42 +683,29 @@ window.runSubdivide = async () => {
     });
     const data = await res.json();
     clearScene();
-
     const geo = buildGeometry(data);
-    currentMesh = new THREE.Mesh(geo,
-      new THREE.MeshPhongMaterial({
-        color: 0x818cf8, side: THREE.DoubleSide
-      })
-    );
+    currentMesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
+      color: 0x818cf8, side: THREE.DoubleSide
+    }));
     scene.add(currentMesh);
     scene.add(new THREE.LineSegments(
       new THREE.WireframeGeometry(geo),
-      new THREE.LineBasicMaterial({
-        color: 0xc7d2fe, transparent: true, opacity: 0.2
-      })
+      new THREE.LineBasicMaterial({ color: 0xc7d2fe, transparent: true, opacity: 0.2 })
     ));
-
     currentMeshId = data.mesh_id;
-    currentMeshData.vertices = data.vertices;
-    currentMeshData.face_id_0 =
-      data.faces.filter((_, i) => i % 3 === 0);
-    currentMeshData.face_id_1 =
-      data.faces.filter((_, i) => i % 3 === 1);
-    currentMeshData.face_id_2 =
-      data.faces.filter((_, i) => i % 3 === 2);
+    currentMeshData.vertices  = data.vertices;
+    currentMeshData.face_id_0 = data.faces.filter((_,i) => i%3===0);
+    currentMeshData.face_id_1 = data.faces.filter((_,i) => i%3===1);
+    currentMeshData.face_id_2 = data.faces.filter((_,i) => i%3===2);
     currentMeshData.vertices_nested = [];
     for (let i = 0; i < data.vertices.length; i += 3)
       currentMeshData.vertices_nested.push([
         data.vertices[i], data.vertices[i+1], data.vertices[i+2]
       ]);
-
     status(`Loop 细分完成：${data.faces.length/3} 面片`);
   } catch(e) { status('错误：' + e.message); }
 };
 
-// ════════════════════════════════════════════════
-// 算法 12：测地线距离（数值）
-// ════════════════════════════════════════════════
 window.runGeodesicDistance = async () => {
   if (!geodesicSource || !geodesicTarget) {
     status('请先通过「选择起/终点」选取两点'); return;
@@ -777,12 +714,9 @@ window.runGeodesicDistance = async () => {
   status('计算测地距离...');
   try {
     const res  = await fetch(`${API}/geodesic_distance`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        mesh_id: currentMeshId,
-        source:  geodesicSource,
-        target:  geodesicTarget,
+        mesh_id: currentMeshId, source: geodesicSource, target: geodesicTarget,
       }),
     });
     const data = await res.json();
@@ -791,40 +725,56 @@ window.runGeodesicDistance = async () => {
 };
 
 // ════════════════════════════════════════════════
-// 算法 13：2D 多边形布尔并集
+// 算法 13：2D 布尔并集
+// unionMode: 0=关闭, 1=收集多边形A, 2=收集多边形B
 // ════════════════════════════════════════════════
-let unionPoly0 = [], unionPoly1 = [], unionStep = 0;
+let unionMode  = 0;
+let unionPoly0 = [];
+let unionPoly1 = [];
 
+// 覆盖 2D 凸包的第二个 click 监听器，同时处理 union 点收集
+// 注意：直接在现有 if (!mode2D) return 前插入 union 逻辑
 window.startUnionPoly0 = () => {
-  unionStep = 1; unionPoly0 = [];
-  mode2D = true;
+  unionPoly0 = [];
+  unionMode  = 1;
+  mode2D     = true;
   camera.position.set(0, 0, 8);
   camera.lookAt(0, 0, 0);
-  status('2D 模式：点击添加多边形 A 的顶点（完成后点击「画多边形 B」）');
+  status('2D 模式（多边形 A）：点击添加红色顶点，完成后点「画多边形 B」');
 };
 
 window.startUnionPoly1 = () => {
-  unionStep = 2; unionPoly1 = [];
-  mode2D = true;
-  status('2D 模式：点击添加多边形 B 的顶点（完成后点击「计算布尔并集」）');
+  unionPoly1 = [];
+  unionMode  = 2;
+  mode2D     = true;
+  status('2D 模式（多边形 B）：点击添加蓝色顶点，完成后点「计算布尔并集」');
 };
 
-// 覆盖 2D 点击事件，支持区分两个多边形
+window.clearUnion = () => {
+  unionPoly0 = []; unionPoly1 = [];
+  unionMode  = 0;  mode2D = false;
+  clearScene();
+  status('并集数据已清空');
+};
+
+// 在现有 2D click 监听器之前注册 union 拦截
+// （利用 unionMode 标志区分，不再注册新的监听器，通过给已有监听器打补丁实现）
+// ── 重新注册一个补丁监听器，捕获 union 点 ────────
 renderer.domElement.addEventListener('click', (e) => {
-  if (unionStep === 0 || !mode2D) return;
+  // 只在 union 模式下生效
+  if (unionMode === 0) return;
   const rect = renderer.domElement.getBoundingClientRect();
-  mouse.x = ((e.clientX-rect.left)/rect.width)  *  2 - 1;
-  mouse.y = ((e.clientY-rect.top) /rect.height) * -2 + 1;
-  const vec = new THREE.Vector3(mouse.x, mouse.y, 0.5)
-    .unproject(camera);
+  mouse.x = ((e.clientX - rect.left) / rect.width)  *  2 - 1;
+  mouse.y = ((e.clientY - rect.top)  / rect.height) * -2 + 1;
+  const vec = new THREE.Vector3(mouse.x, mouse.y, 0.5).unproject(camera);
   const dir = vec.sub(camera.position).normalize();
   const t   = -camera.position.z / dir.z;
   const pos = camera.position.clone().add(dir.multiplyScalar(t));
 
-  if (unionStep === 1) unionPoly0.push([pos.x, pos.y]);
+  const color = unionMode === 1 ? 0xf87171 : 0x60a5fa;
+  if (unionMode === 1) unionPoly0.push([pos.x, pos.y]);
   else                 unionPoly1.push([pos.x, pos.y]);
 
-  const color = unionStep === 1 ? 0xf87171 : 0x60a5fa;
   const dot = new THREE.Mesh(
     new THREE.SphereGeometry(0.05),
     new THREE.MeshBasicMaterial({ color })
@@ -837,37 +787,25 @@ window.runPolygonUnion = async () => {
   if (unionPoly0.length < 3 || unionPoly1.length < 3) {
     status('每个多边形至少需要 3 个点'); return;
   }
+  unionMode = 0;  // 关闭输入
+  mode2D    = false;
   status('计算多边形并集...');
   try {
     const res  = await fetch(`${API}/polygon_union_2d`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        polygon_0: unionPoly0,
-        polygon_1: unionPoly1,
-      }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ polygon_0: unionPoly0, polygon_1: unionPoly1 }),
     });
+    if (!res.ok) { status('服务端错误 ' + res.status); return; }
     const data = await res.json();
-
-    data.polygons.forEach((poly, idx) => {
-      const pts = [...poly, poly[0]].map(
-        p => new THREE.Vector3(p[0], p[1], 0)
-      );
+    data.polygons.forEach(poly => {
+      const pts = [...poly, poly[0]].map(p => new THREE.Vector3(p[0], p[1], 0));
       scene.add(new THREE.Line(
         new THREE.BufferGeometry().setFromPoints(pts),
-        new THREE.LineBasicMaterial({ color: 0xa78bfa })
+        new THREE.LineBasicMaterial({ color: 0xa78bfa, linewidth: 2 })
       ));
     });
-    status(`布尔并集：面积=${data.area.toFixed(4)}，` +
-           `${data.polygons.length} 个多边形`);
+    status(`布尔并集：面积=${data.area.toFixed(4)}，${data.polygons.length} 个多边形`);
   } catch(e) { status('错误：' + e.message); }
-};
-
-window.clearUnion = () => {
-  unionPoly0 = []; unionPoly1 = [];
-  unionStep  = 0;  mode2D = false;
-  clearScene();
-  status('并集数据已清空');
 };
 </script>
 </body>

@@ -579,24 +579,29 @@ window.run2DConvexHull = async () => {
 
 window.runMeshBoundary = async () => {
   if (!currentMeshId) { status('请先加载一个网格'); return; }
-  status('提取边界中...');
+  status('提取网格边界中...');
   try {
     const res  = await fetch(`${API}/mesh_boundary`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mesh_id: currentMeshId, input_points: [] }),
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mesh_id: currentMeshId }),  // ← 只发 mesh_id
     });
+    if (!res.ok) {
+      const err = await res.json();
+      status('错误：' + JSON.stringify(err.detail)); return;
+    }
     const data = await res.json();
-    const colors = [0xf87171, 0xfbbf24, 0x34d399, 0x60a5fa];
+    const colors = [0xf87171, 0xfbbf24, 0x34d399, 0x60a5fa, 0xc084fc];
     data.boundaries.forEach((loop, idx) => {
       const pts = loop.map(p => new THREE.Vector3(p[0], p[1], p[2]));
-      if (pts.length < 2) return;
-      pts.push(pts[0]);
+      if (!pts.length) return;
+      pts.push(pts[0]);  // 闭合
       scene.add(new THREE.Line(
         new THREE.BufferGeometry().setFromPoints(pts),
-        new THREE.LineBasicMaterial({ color: colors[idx % colors.length] })
+        new THREE.LineBasicMaterial({ color: colors[idx % colors.length], linewidth: 2 })
       ));
     });
-    status(`边界：${data.boundaries.length} 条轮廓`);
+    status(`网格边界：${data.boundaries.length} 条轮廓`);
   } catch(e) { status('错误：' + e.message); }
 };
 

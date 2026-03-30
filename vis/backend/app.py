@@ -77,6 +77,8 @@ class PolygonOffsetRequest(BaseModel):
     polygon:  list[list[float]]
     distance: float
 
+class MeshIdRequest(BaseModel):
+    mesh_id: str
 # ════════════════════════════════════════════════
 # 工具函数
 # ════════════════════════════════════════════════
@@ -187,34 +189,44 @@ def repair_mesh(vertices, fi0, fi1, fi2):
     return unique_verts, fixed_fi0, fixed_fi1, fixed_fi2
 
 
-def save_mesh(vertices, fi0, fi1, fi2,
-              repair: bool = False) -> str:
-    """
-    把网格保存为 OBJ，返回 mesh_id。
-    repair=True 时先做流形修复（测地线接口需要）。
-    """
+# ── 修复1：save_mesh 同时写 OFF 文件（供 CGAL slicer 读取）──
+def save_mesh(vertices, fi0, fi1, fi2, repair: bool = False) -> str:
     if repair:
         vertices, fi0, fi1, fi2 = repair_mesh(vertices, fi0, fi1, fi2)
 
     mesh_id  = uuid.uuid4().hex[:8]
-    filepath = os.path.join(MESH_DIR, f"{mesh_id}.obj")
+    obj_path = os.path.join(MESH_DIR, f"{mesh_id}.obj")
+    off_path = os.path.join(MESH_DIR, f"{mesh_id}.off")
 
-    with open(filepath, "w") as f:
+    # 写 OBJ（供大多数接口使用）
+    with open(obj_path, "w") as f:
         f.write("# LibHGP mesh cache\n")
         for v in vertices:
             f.write(f"v {v[0]} {v[1]} {v[2]}\n")
         for i in range(len(fi0)):
             f.write(f"f {fi0[i]+1} {fi1[i]+1} {fi2[i]+1}\n")
 
+    # 写 OFF（供 CGAL HGP_Slicer_Mesh / HGP_3D_Triangle_Mesh_Boundary_C5 读取）
+    nv = len(vertices)
+    nf = len(fi0)
+    with open(off_path, "w") as f:
+        f.write("OFF\n")
+        f.write(f"{nv} {nf} 0\n")
+        for v in vertices:
+            f.write(f"{v[0]} {v[1]} {v[2]}\n")
+        for i in range(nf):
+            f.write(f"3 {fi0[i]} {fi1[i]} {fi2[i]}\n")
+
     return mesh_id
 
 
-def get_mesh_path(mesh_id: str) -> str:
-    path = os.path.join(MESH_DIR, f"{mesh_id}.obj")
+def get_mesh_path(mesh_id: str, ext: str = "obj") -> str:
+    """ext: 'obj' 或 'off'"""
+    path = os.path.join(MESH_DIR, f"{mesh_id}.{ext}")
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"mesh_id={mesh_id} 对应的缓存文件不存在，"
-            "请先调用凸包或平滑接口生成网格"
+            f"mesh_id={mesh_id} 对应的 .{ext} 缓存文件不存在，"
+            "请先调用凸包或平滑接口生成网格"    
         )
     return path
 
@@ -284,9 +296,10 @@ def geodesic_path(req: GeodesicRequest):
 # 接口 5：网格切片
 # ════════════════════════════════════════════════
 
+# ── 修复2：slicer 使用 .off 文件 ──
 @app.post("/api/slicer")
 def slicer(req: SlicerRequest):
-    mesh_path          = get_mesh_path(req.mesh_id)
+    mesh_path          = get_mesh_path(req.mesh_id, ext="off")   # ← 改为 off
     offsetses, offsets = hgp_py.HGP_Slicer_Mesh(
         mesh_path, req.plane_normal, req.plane_ds
     )
@@ -350,18 +363,11 @@ def polygon_sampling_2d(req: PolygonRequest,
 # 输出：边界轮廓线段组（前端高亮渲染）
 # ════════════════════════════════════════════════
 
+# ── 修复3：mesh_boundary 换用 MeshIdRequest + Boundary_C5（接受文件路径）──
 @app.post("/api/mesh_boundary")
-def mesh_boundary(req: CurvatureRequest):
-    """
-    输入：mesh_id（网格缓存）
-    输出：边界轮廓线列表，每条线是有序点序列
-    """
-    mesh_path = get_mesh_path(req.mesh_id)
-    # 读取缓存网格顶点和面片
-    verts, fi0, fi1, fi2 = _load_mesh_from_obj(mesh_path)
-    boundaries = hgp_py.HGP_3D_Triangle_Mesh_Boundary_C3(
-        verts, fi0, fi1, fi2
-    )
+def mesh_boundary(req: MeshIdRequest):          # ← 不再用 CurvatureRequest
+    mesh_path  = get_mesh_path(req.mesh_id, ext="off")   # ← 同样用 off
+    boundaries = hgp_py.HGP_3D_Triangle_Mesh_Boundary_C5(mesh_path)
     return {
         "boundaries": [
             [[p[0], p[1], p[2]] for p in loop]

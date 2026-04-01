@@ -447,7 +447,12 @@ renderer.domElement.addEventListener('click', (e) => {
     const depth  = parseFloat(document.getElementById('hole-depth').value);
     fetch(`${API}/csg/preview_cylinder`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ center: holePick.center, normal: holePick.normal, radius, depth }),
+      body: JSON.stringify({ 
+          center: holePick.center, 
+          normal: holePick.normal, 
+          radius, 
+          depth,
+      }),
     }).then(r => r.json()).then(data => {
       const geo = buildGeometry(data);
       holePreviewMesh = new THREE.Mesh(geo,

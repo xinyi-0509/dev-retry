@@ -312,7 +312,8 @@ def _center_mesh(vertices, fi0, fi1, fi2):
     new_verts = [[v[0] - cx, v[1] - cy, v[2] - cz] for v in vertices]
     return new_verts, fi0, fi1, fi2
 
-def save_mesh(vertices, fi0, fi1, fi2, repair: bool = False) -> str:
+def save_mesh(vertices, fi0, fi1, fi2, repair: bool = False) -> tuple[str, list, list, list, list]:
+    """返回 (mesh_id, 最终顶点, fi0, fi1, fi2)，保证与磁盘文件一致"""
     if repair:
         vertices, fi0, fi1, fi2 = repair_mesh(vertices, fi0, fi1, fi2)
     mesh_id  = uuid.uuid4().hex[:8]
@@ -332,7 +333,7 @@ def save_mesh(vertices, fi0, fi1, fi2, repair: bool = False) -> str:
             f.write(f"{v[0]} {v[1]} {v[2]}\n")
         for i in range(nf):
             f.write(f"3 {fi0[i]} {fi1[i]} {fi2[i]}\n")
-    return mesh_id
+    return mesh_id, vertices, fi0, fi1, fi2
 
 
 def get_mesh_path(mesh_id: str, ext: str = "obj") -> str:
@@ -416,7 +417,7 @@ def _do_boolean(verts_a, fi0_a, fi1_a, fi2_a,
 @app.post("/api/convex_hull_3d")
 def convex_hull_3d(req: PointsRequest):
     hull_verts, fi0, fi1, fi2 = hgp_py.HGP_3D_Convex_Hulls_C2(req.points)
-    mesh_id = save_mesh(hull_verts, fi0, fi1, fi2, repair=False)
+    mesh_id, hull_verts, fi0, fi1, fi2 = save_mesh(hull_verts, fi0, fi1, fi2, repair=False)
     return mesh_response(hull_verts, fi0, fi1, fi2, mesh_id)
 
 # ════════════════════════════════════════════════
@@ -432,7 +433,7 @@ async def upload_obj(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="OBJ 文件解析失败或不含三角面片")
     #verts, fi0, fi1, fi2 = _normalize_mesh(verts, fi0, fi1, fi2, target_size=2.0) # 归一化到 [-1,1] 范围，适合直接预览，但会丢失原始尺寸信息
     verts, fi0, fi1, fi2 = _center_mesh(verts, fi0, fi1, fi2)  # 仅平移到原点，保留尺寸信息，适合后续计算（如测地线）使用
-    mesh_id = save_mesh(verts, fi0, fi1, fi2, repair=True)
+    mesh_id, verts, fi0, fi1, fi2 = save_mesh(verts, fi0, fi1, fi2, repair=True)
     return mesh_response(verts, fi0, fi1, fi2, mesh_id)
 
 # ════════════════════════════════════════════════
@@ -442,7 +443,7 @@ async def upload_obj(file: UploadFile = File(...)):
 @app.post("/api/visualize")
 def visualize(req: VisRequest):
     verts, fi0, fi1, fi2 = parse_obj_string(req.obj_string)
-    mesh_id = save_mesh(verts, fi0, fi1, fi2, repair=False)
+    mesh_id, verts, fi0, fi1, fi2 = save_mesh(verts, fi0, fi1, fi2, repair=False)
     return mesh_response(verts, fi0, fi1, fi2, mesh_id)
 
 # ════════════════════════════════════════════════
@@ -453,7 +454,7 @@ def visualize(req: VisRequest):
 def smooth(req: SmoothRequest):
     verts_out, fi0, fi1, fi2 = hgp_py.HGP_Mesh_Laplace_Smooth_C2(
         req.vertices, req.face_id_0, req.face_id_1, req.face_id_2, req.iterations)
-    mesh_id = save_mesh(verts_out, fi0, fi1, fi2, repair=False)
+    mesh_id, verts_out, fi0, fi1, fi2 = save_mesh(verts_out, fi0, fi1, fi2, repair=False)
     return mesh_response(verts_out, fi0, fi1, fi2, mesh_id)
 
 # ════════════════════════════════════════════════
@@ -467,7 +468,7 @@ def subdivide(req: SmoothRequest):
     fi1   = list(req.face_id_1)
     fi2   = list(req.face_id_2)
     hgp_py.HGP_Mesh_Loop_Subdivision_One_Step(verts, fi0, fi1, fi2)
-    mesh_id = save_mesh(verts, fi0, fi1, fi2, repair=False)
+    mesh_id, verts, fi0, fi1, fi2 = save_mesh(verts, fi0, fi1, fi2, repair=False)
     return mesh_response(verts, fi0, fi1, fi2, mesh_id)
 
 # ════════════════════════════════════════════════
@@ -645,25 +646,27 @@ def polygon_sampling_2d_regular(req: Polygon2DSamplingRequest):
 # ════════════════════════════════════════════════
 # 接口 19-21：CSG（构造实体几何）
 # ════════════════════════════════════════════════
+def _make_oriented_cylinder(center, normal_normalized, radius, height, segments=48):
+    """
+    生成以 center 为轴中点、沿 normal_normalized 方向的圆柱。
+    步骤：
+      1. 在原点生成沿 Z 轴的圆柱，令圆柱以原点为轴向中点
+         （底面在 z = -height/2，顶面在 z = +height/2）
+      2. 若法线不是 Z 轴，写入临时 OBJ，用 HGP_Rotation_Obj 绕原点旋转
+      3. 平移到 center
+    """
+    ax, ay, az = normal_normalized
 
-@app.post("/api/csg/hole")
-def csg_hole(req: CSGHoleRequest):
-    """在主体网格上打一个圆柱孔（difference 布尔运算）"""
-    ax, ay, az = _normalize(req.normal)
-
-    # 用 hgp_py 生成圆柱工具体：沿默认 Z 轴生成，中心在 center
-    # depth * 1.05 保证圆柱比主体厚，避免共面导致布尔失败
+    # ── 1. 在原点生成圆柱，中心在原点（底面偏 -height/2）──
+    half_h = height / 2.0
     cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = hgp_py.HGP_Mesh_Make_Cylinder(
-        req.center[0], req.center[1], req.center[2],
-        req.radius, req.depth * 1.05, 48)
+        0.0, 0.0, -half_h,   # ← 底面中心在 -half_h，使轴向中点落在原点
+        radius, height, segments)
 
-    # 若轴线不是 Z 轴，需把圆柱旋转到目标法线方向
-    # hgp_py 的圆柱默认沿 Z 轴；当法线非 Z 时用 HGP_Rotation_Obj 旋转
-    # 实现：先把圆柱保存为临时 OBJ，旋转后重新读入
+    # ── 2. 旋转对齐法线（绕原点旋转，中心不漂移）──
     z_axis = [0.0, 0.0, 1.0]
-    dot = ax*z_axis[0] + ay*z_axis[1] + az*z_axis[2]   # cos(θ)
+    dot = ax*z_axis[0] + ay*z_axis[1] + az*z_axis[2]
     if abs(dot - 1.0) > 1e-6:
-        # 旋转轴 = Z × axis_norm（叉积）
         rx = z_axis[1]*az - z_axis[2]*ay
         ry = z_axis[2]*ax - z_axis[0]*az
         rz = z_axis[0]*ay - z_axis[1]*ax
@@ -671,10 +674,25 @@ def csg_hole(req: CSGHoleRequest):
         if rl > 1e-9:
             angle = math.acos(max(-1.0, min(1.0, dot)))
             rot_axis = [rx/rl, ry/rl, rz/rl]
-            tmp_id  = save_mesh(cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2, repair=False)
+            tmp_id, _, _, _, _ = save_mesh(cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2, repair=False)
             tmp_obj = get_mesh_path(tmp_id, ext="obj")
             hgp_py.HGP_Rotation_Obj(tmp_obj, angle, rot_axis)
             cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = _load_mesh_from_obj(tmp_obj)
+
+    # ── 3. 平移到拾取点 ──
+    cx, cy, cz = center
+    cyl_verts = [[v[0]+cx, v[1]+cy, v[2]+cz] for v in cyl_verts]
+
+    return cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2
+
+@app.post("/api/csg/hole")
+def csg_hole(req: CSGHoleRequest):
+    """在主体网格上打一个圆柱孔（difference 布尔运算）"""
+    ax, ay, az = _normalize(req.normal)
+
+    # depth * 1.05：圆柱略长于目标深度，避免共面导致布尔失败
+    cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = _make_oriented_cylinder(
+        req.center, [ax, ay, az], req.radius, req.depth * 1.05)
 
     mesh_path = get_mesh_path(req.mesh_id)
     verts_a, fi0_a, fi1_a, fi2_a = _load_mesh_from_obj(mesh_path)
@@ -684,7 +702,8 @@ def csg_hole(req: CSGHoleRequest):
         cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2,
         "difference")
 
-    mesh_id = save_mesh(verts_out, fi0_out, fi1_out, fi2_out, repair=False)
+    mesh_id, verts_out, fi0_out, fi1_out, fi2_out = save_mesh(
+        verts_out, fi0_out, fi1_out, fi2_out, repair=False)
     return mesh_response(verts_out, fi0_out, fi1_out, fi2_out, mesh_id)
 
 
@@ -697,7 +716,7 @@ def csg_boolean(req: CSGBooleanRequest):
         verts_a, fi0_a, fi1_a, fi2_a,
         verts_b, fi0_b, fi1_b, fi2_b,
         req.operation)
-    mesh_id = save_mesh(verts_out, fi0_out, fi1_out, fi2_out, repair=False)
+    mesh_id, verts_out, fi0_out, fi1_out, fi2_out = save_mesh(verts_out, fi0_out, fi1_out, fi2_out, repair=False)
     return mesh_response(verts_out, fi0_out, fi1_out, fi2_out, mesh_id)
 
 
@@ -706,26 +725,11 @@ def csg_preview_cylinder(req: CSGPreviewRequest):
     """返回工具圆柱的网格，供前端半透明预览（不修改主体网格）"""
     ax, ay, az = _normalize(req.normal)
 
-    cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = hgp_py.HGP_Mesh_Make_Cylinder(
-        req.center[0], req.center[1], req.center[2],
-        req.radius, req.depth, 48)
+    cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = _make_oriented_cylinder(
+        req.center, [ax, ay, az], req.radius, req.depth)
 
-    z_axis = [0.0, 0.0, 1.0]
-    dot = ax*z_axis[0] + ay*z_axis[1] + az*z_axis[2]
-    if abs(dot - 1.0) > 1e-6:
-        rx = z_axis[1]*az - z_axis[2]*ay
-        ry = z_axis[2]*ax - z_axis[0]*az
-        rz = z_axis[0]*ay - z_axis[1]*ax
-        rl = math.sqrt(rx*rx + ry*ry + rz*rz)
-        if rl > 1e-9:
-            angle = math.acos(max(-1.0, min(1.0, dot)))
-            rot_axis = [rx/rl, ry/rl, rz/rl]
-            tmp_id  = save_mesh(cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2, repair=False)
-            tmp_obj = get_mesh_path(tmp_id, ext="obj")
-            hgp_py.HGP_Rotation_Obj(tmp_obj, angle, rot_axis)
-            cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = _load_mesh_from_obj(tmp_obj)
-
-    mesh_id = save_mesh(cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2, repair=False)
+    mesh_id, cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = save_mesh(
+        cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2, repair=False)
     return mesh_response(cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2, mesh_id)
 # ════════════════════════════════════════════════
 # 接口：按 mesh_id 重新加载网格（用于撤销）

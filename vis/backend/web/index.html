@@ -281,8 +281,43 @@ function applyMeshData(data, color = 0x60a5fa) {
   for (let i = 0; i < data.vertices.length; i += 3)
     currentMeshData.vertices_nested.push(
       [data.vertices[i], data.vertices[i+1], data.vertices[i+2]]);
+  // ── 归位相机（归一化后模型始终在原点附近 ±1 范围内）──
+  camera.position.set(0, 0, 5);
+  camera.lookAt(0, 0, 0);
+  controls.target.set(0, 0, 0);
+  controls.update();
+  // ── 动态计算标记球半径：包围盒最长边 × 0.015 ──
+  if (data.mesh_id) {
+    fetch(`${API}/mesh_bbox`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mesh_id: data.mesh_id, input_points: [] }),
+    }).then(r => r.json()).then(bb => {
+      const dx = bb.max_corner[0] - bb.min_corner[0];
+      const dy = bb.max_corner[1] - bb.min_corner[1];
+      const dz = bb.max_corner[2] - bb.min_corner[2];
+      markerRadius = Math.max(dx, dy, dz) * 0.015;
+    }).catch(() => { /* 静默失败，保留默认值 */ });
+  }
 }
 
+/**
+ * 根据命中面片的最长边计算标记球半径。
+ * 比例系数 0.1：球径约等于面片最长边的 10%，视觉上清晰但不遮挡。
+ */
+function faceSize(hit) {
+  const pos = hit.object.geometry.attributes.position;
+  const toV = (i) => new THREE.Vector3().fromBufferAttribute(pos, i)
+    .applyMatrix4(hit.object.matrixWorld);   // 转换到世界坐标
+
+  const { a, b, c } = hit.face;
+  const va = toV(a), vb = toV(b), vc = toV(c);
+  const longestEdge = Math.max(
+    va.distanceTo(vb),
+    vb.distanceTo(vc),
+    vc.distanceTo(va)
+  );
+  return Math.max(longestEdge * 0.1, 0.005);   // 下限 0.005 防止极退化面片
+}
 // ════════════════════════════════════════════════
 // 全局状态
 // ════════════════════════════════════════════════
@@ -311,6 +346,9 @@ let unionPoly1 = [];
 // 统一拾取状态机
 // 0=空闲, 1=测地起点, 2=测地终点, 3=打孔圆心
 let pickStep = 0;
+
+// ── 标记球动态半径（随网格尺寸更新）──────────
+let markerRadius = 0.05;   // 默认值，applyMeshData 后会覆盖
 
 const raycaster = new THREE.Raycaster();
 const mouse     = new THREE.Vector2();
@@ -367,8 +405,9 @@ renderer.domElement.addEventListener('click', (e) => {
 
   if (pickStep === 1) {
     // 测地起点
+    const r = faceSize(hit);  // ← 根据命中面片动态计算
     if (sourceMarker) scene.remove(sourceMarker);
-    sourceMarker = new THREE.Mesh(new THREE.SphereGeometry(0.05),
+    sourceMarker = new THREE.Mesh(new THREE.SphereGeometry(r),
       new THREE.MeshBasicMaterial({ color: 0x00ff00, depthTest: false }));
     sourceMarker.position.copy(pt);
     sourceMarker.renderOrder = 999;
@@ -379,8 +418,9 @@ renderer.domElement.addEventListener('click', (e) => {
 
   } else if (pickStep === 2) {
     // 测地终点
+    const r = faceSize(hit);   // ← 根据命中面片动态计算
     if (targetMarker) scene.remove(targetMarker);
-    targetMarker = new THREE.Mesh(new THREE.SphereGeometry(0.05),
+    targetMarker = new THREE.Mesh(new THREE.SphereGeometry(r),
       new THREE.MeshBasicMaterial({ color: 0xff0000, depthTest: false }));
     targetMarker.position.copy(pt);
     targetMarker.renderOrder = 999;
@@ -565,48 +605,59 @@ window.runGeodesic = async () => {
 // ════════════════════════════════════════════════
 window.runSlicer = async () => {
   if (!currentMeshId) { status('请先加载一个网格'); return; }
-  const count = parseInt(document.getElementById('slice-count').value);
-  const axis  = document.querySelector('input[name="slice-axis"]:checked').value;
+  const n = parseInt(document.getElementById('slice-count').value);
 
-  // 读取包围盒确定切片范围
-  const bbRes  = await fetch(`${API}/mesh_bbox`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mesh_id: currentMeshId, input_points: [] }),
-  });
-  const bb = await bbRes.json();
-  const mn = bb.min_corner, mx = bb.max_corner;
+  // 读取选中的轴向
+  const axisVal = document.querySelector('input[name="slice-axis"]:checked').value;
+  // X→0, Y→1, Z→2
+  const axisIdx = { X: 0, Y: 1, Z: 2 }[axisVal];
+  const normal  = [0, 0, 0];
+  normal[axisIdx] = 1;
 
-  let normal, minVal, maxVal;
-  if (axis === 'X') { normal = [1,0,0]; minVal = mn[0]; maxVal = mx[0]; }
-  else if (axis === 'Y') { normal = [0,1,0]; minVal = mn[1]; maxVal = mx[1]; }
-  else                   { normal = [0,0,1]; minVal = mn[2]; maxVal = mx[2]; }
+  // 取该轴的顶点分量范围
+  const vals = currentMeshData.vertices_nested.map(v => v[axisIdx]);
+  console.log('vertices_nested长度:', currentMeshData.vertices_nested.length);
+  console.log('vertices长度:', currentMeshData.vertices.length);
+  const vMin = Math.min(...vals), vMax = Math.max(...vals);
+  // 平面方程 normal·p + d = 0  →  d = -(normal·p) = -coord
+  const ds = Array.from({ length: n }, (_, i) =>
+    (vMin + (vMax - vMin) * (i + 1) / (n + 1))
+  );
 
-  const eps = (maxVal - minVal) * 0.01;
-  const plane_ds = Array.from({ length: count }, (_, i) =>
-    -(minVal + eps + (maxVal - minVal - 2*eps) * i / (count - 1 || 1)));
-
-  status('切片中...');
+  status(`沿 ${axisVal} 轴切片中...`);
   try {
-    const res  = await fetch(`${API}/slicer`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mesh_id: currentMeshId, plane_normal: normal, plane_ds }),
+    const res = await fetch(`${API}/slicer`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mesh_id:      currentMeshId,
+        plane_normal: normal,
+        plane_ds:     ds,
+      }),
     });
     const data = await res.json();
-    const colors = [0xf87171, 0xfbbf24, 0x34d399, 0x60a5fa, 0xc084fc,
-                    0xfb923c, 0xa3e635, 0x22d3ee, 0xe879f9, 0xf43f5e];
+    //console.log('切片返回数据:', JSON.stringify(data.slices[0]));
+    const colors = [0xf87171, 0xfbbf24, 0x34d399, 0x60a5fa, 0xc084fc];
     let total = 0;
-    data.slices.forEach((slice, si) => {
-      const color = colors[si % colors.length];
-      slice.contours.forEach(seg => {
-        if (seg.length < 2) return;
-        const pts = seg.map(p => new THREE.Vector3(p[0], p[1], p[2]));
-        scene.add(new THREE.Line(
-          new THREE.BufferGeometry().setFromPoints(pts),
-          new THREE.LineBasicMaterial({ color })));
-        total++;
+    data.slices.forEach((s, idx) => {
+      const color = colors[idx % colors.length];
+      const sliceContoursCount = s.contours.filter(contour => contour.length > 0).length;
+      total += sliceContoursCount; // 累加轮廓数量
+      s.contours.forEach(contour => {
+          const pts = contour.map(p => new THREE.Vector3(p[0], p[1], p[2]));
+          if (!pts.length) return;
+
+          // 首尾距离足够近才闭合（凸包自动闭合，复杂非凸模型保持开放）
+          if (pts[0].distanceTo(pts[pts.length - 1]) < 0.2) {
+              pts.push(pts[0]);
+          }
+          scene.add(new THREE.Line(
+              new THREE.BufferGeometry().setFromPoints(pts),
+              new THREE.LineBasicMaterial({ color })
+          ));
       });
     });
-    status(`切片完成：${data.slices.length} 层，共 ${total} 段轮廓`);
+    status(`${axisVal} 轴切片完成：${data.slices.length} 个截面,共 ${total} 段轮廓`);
   } catch(e) { status('错误：' + e.message); }
 };
 
@@ -781,7 +832,7 @@ window.runPolygonUnion = async () => {
   } catch(e) { status('错误：' + e.message); }
 };
 
-// ════════════════════════════════════════════════
+// ═══════════════════════════════════════════════
 // 算法 13：CSG 打孔
 // ════════════════════════════════════════════════
 window.startHolePick = () => {
@@ -809,7 +860,7 @@ window.runCSGHole = async () => {
   // 移除预览圆柱
   if (holePreviewMesh) { scene.remove(holePreviewMesh); holePreviewMesh = null; }
 
-  status('CSG 打孔运算中（trimesh 布尔，可能需要几秒）...');
+  status('CSG 打孔运算中（hgp_py CGAL 布尔，请稍候）...');
   document.getElementById('hole-result').textContent = '计算中...';
   try {
     const res  = await fetch(`${API}/csg/hole`, {
@@ -839,41 +890,25 @@ window.runCSGHole = async () => {
 
 window.undoCSGHole = async () => {
   if (!prevMeshId) { status('没有可撤销的操作'); return; }
-  // 从服务端重新加载打孔前的网格
+  status('撤销中，从缓存恢复打孔前的网格...');
   try {
-    const res  = await fetch(`${API}/mesh_bbox`, {
+    // 直接通过后端接口按 mesh_id 重新加载旧网格（不依赖直接访问文件系统）
+    const res  = await fetch(`${API}/mesh/reload`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mesh_id: prevMeshId, input_points: [] }),
+      body: JSON.stringify({ mesh_id: prevMeshId }),
     });
-    if (!res.ok) { status('撤销失败：找不到原始网格缓存'); return; }
-    // 重新 visualize 接口读回 OBJ
-    const visRes = await fetch(`${API}/visualize`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ obj_string: '', label: '' }),
-    });
-    // 更简单的方法：直接把 prevMeshId 赋回 currentMeshId 并重建渲染
-    // 因为 OBJ 文件还在 mesh_cache，直接切换 mesh_id 并重加载顶点
-    const objRes = await fetch(`/mesh_cache/${prevMeshId}.obj`).catch(() => null);
-    if (objRes && objRes.ok) {
-      const text = await objRes.text();
-      const vRes = await fetch(`${API}/visualize`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ obj_string: text }),
-      });
-      const data = await vRes.json();
-      applyMeshData(data, 0x60a5fa);
-      holePick = null;
-      if (holePreviewMesh) { scene.remove(holePreviewMesh); holePreviewMesh = null; }
-      document.getElementById('hole-result').textContent = '↩ 已撤销';
-      status('撤销成功，已恢复打孔前的网格');
-      prevMeshId = null;
-    } else {
-      // 降级：直接把 currentMeshId 切回去，让后续操作基于旧 mesh_id
-      currentMeshId = prevMeshId;
-      prevMeshId = null;
-      document.getElementById('hole-result').textContent = '↩ mesh_id 已回滚（顶点未重渲染）';
-      status('mesh_id 已回滚');
+    if (!res.ok) {
+      const err = await res.json();
+      status('撤销失败：' + (err.detail || '缓存已过期'));
+      return;
     }
+    const data = await res.json();
+    applyMeshData(data, 0x60a5fa);
+    holePick = null;
+    if (holePreviewMesh) { scene.remove(holePreviewMesh); holePreviewMesh = null; }
+    document.getElementById('hole-result').textContent = '↩ 已撤销，恢复打孔前的网格';
+    status('撤销成功');
+    prevMeshId = null;
   } catch(e) { status('撤销失败：' + e.message); }
 };
 

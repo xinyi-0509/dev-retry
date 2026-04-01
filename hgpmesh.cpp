@@ -7,6 +7,8 @@
 #include "hull3D.h"
 #include "kdtree.h"
 
+#include <cmath>
+#include <stdexcept>
 
 /********************************************************
 * Function name :HGP_Remesh_Surface_by_Adding_Feature
@@ -6044,4 +6046,478 @@ extern "C" LIBHGP_EXPORT void HGP_Cut_Surface_by_Multi_Boundaries(const Vector3d
 
 	std::cout << "over" << std::endl;
 	return;
+}
+
+// ============================================================
+//  CSG Extension for hgpmesh.cpp
+//  ─ Primitive Generators + Boolean Operations
+//  ─ All using EK (Exact_predicates_exact_constructions_kernel)
+//    via PMP::corefine_and_compute_*
+// ============================================================
+
+
+// ────────────────────────────────────────────────────────────
+//  Internal helpers
+// ────────────────────────────────────────────────────────────
+
+// Convert K::Surface_mesh → EK::Surface_mesh
+// (double coordinates → exact number type)
+static void Mesh_K_to_EK(const Mesh& src, EK_Mesh& dst)
+{
+    dst.clear();
+    std::map<Mesh::Vertex_index, EK_Mesh::Vertex_index> vmap;
+    for (auto v : src.vertices()) {
+        const auto& p = src.point(v);
+        vmap[v] = dst.add_vertex(EK::Point_3(
+            CGAL::to_double(p.x()),
+            CGAL::to_double(p.y()),
+            CGAL::to_double(p.z())));
+    }
+    for (auto f : src.faces()) {
+        std::vector<EK_Mesh::Vertex_index> fv;
+        for (auto v : CGAL::vertices_around_face(src.halfedge(f), src))
+            fv.push_back(vmap[v]);
+        dst.add_face(fv);
+    }
+}
+
+static void Mesh_EK_to_K(const EK_Mesh& src, Mesh& dst)
+{
+    dst.clear();
+    std::map<EK_Mesh::Vertex_index, Mesh::Vertex_index> vmap;
+    for (auto v : src.vertices()) {
+        const auto& p = src.point(v);
+        vmap[v] = dst.add_vertex(K::Point_3(
+            CGAL::to_double(p.x()),
+            CGAL::to_double(p.y()),
+            CGAL::to_double(p.z())));
+    }
+    for (auto f : src.faces()) {
+        std::vector<Mesh::Vertex_index> fv;
+        for (auto v : CGAL::vertices_around_face(src.halfedge(f), src))
+            fv.push_back(vmap[v]);
+        dst.add_face(fv);
+    }
+}
+
+// Build a K::Surface_mesh from the standard (vecs, fi0, fi1, fi2) interface
+static Mesh Build_Mesh_from_Vecs(
+    const Vector3d1& vecs,
+    const Vector1i1& fi0,
+    const Vector1i1& fi1,
+    const Vector1i1& fi2)
+{
+    Mesh m;
+    std::vector<Mesh::Vertex_index> vhandles;
+    vhandles.reserve(vecs.size());
+    for (const auto& v : vecs)
+        vhandles.push_back(m.add_vertex(K::Point_3(v[0], v[1], v[2])));
+
+    for (std::size_t i = 0; i < fi0.size(); ++i)
+        m.add_face(vhandles[fi0[i]], vhandles[fi1[i]], vhandles[fi2[i]]);
+
+    return m;
+}
+
+// Extract (vecs, fi0, fi1, fi2) from a K::Surface_mesh
+static void Extract_Vecs_from_Mesh(
+    const Mesh& m,
+    Vector3d1& vecs,
+    Vector1i1& fi0,
+    Vector1i1& fi1,
+    Vector1i1& fi2)
+{
+    vecs.clear(); fi0.clear(); fi1.clear(); fi2.clear();
+
+    // vertex index re-mapping (handles may be non-contiguous after booleans)
+    std::map<Mesh::Vertex_index, int> vmap;
+    int idx = 0;
+    for (auto v : m.vertices()) {
+        const auto& p = m.point(v);
+        vecs.push_back(Vector3d(
+            CGAL::to_double(p.x()),
+            CGAL::to_double(p.y()),
+            CGAL::to_double(p.z())));
+        vmap[v] = idx++;
+    }
+
+    for (auto f : m.faces()) {
+        std::vector<int> fv;
+        for (auto v : CGAL::vertices_around_face(m.halfedge(f), m))
+            fv.push_back(vmap[v]);
+        // faces should already be triangles; guard anyway
+        if (fv.size() == 3) {
+            fi0.push_back(fv[0]);
+            fi1.push_back(fv[1]);
+            fi2.push_back(fv[2]);
+        }
+    }
+}
+
+// Run PMP boolean on two K meshes, return result as K mesh.
+// op: 0=union, 1=difference, 2=intersection
+static bool CSG_Boolean_Op(
+    const Mesh& ma_k, const Mesh& mb_k,
+    int op,
+    Mesh& result_k)
+{
+    // Copy to EK
+    EK_Mesh a, b, result;
+    Mesh_K_to_EK(ma_k, a);
+    Mesh_K_to_EK(mb_k, b);
+
+    bool ok = false;
+    if (op == 0)
+        ok = PMP::corefine_and_compute_union(a, b, result);
+    else if (op == 1)
+        ok = PMP::corefine_and_compute_difference(a, b, result);
+    else
+        ok = PMP::corefine_and_compute_intersection(a, b, result);
+
+    if (!ok) return false;
+
+    // Triangulate any polygon faces produced by corefinement
+    PMP::triangulate_faces(result);
+
+    // Convert back to K
+    Mesh_EK_to_K(result, result_k);
+    return true;
+}
+
+// ────────────────────────────────────────────────────────────
+//  §1  Primitive Generators
+// ────────────────────────────────────────────────────────────
+
+/********************************************************
+ * Function name : HGP_Mesh_Make_Box
+ * Description   : Generate a closed triangulated box (cuboid) mesh.
+ * Parameters    :
+ * @cx,cy,cz    : Center of the box.
+ * @wx,wy,wz    : Half-extents along X / Y / Z (full width = 2*w).
+ * @vecs        : Output vertices.
+ * @fi0,fi1,fi2 : Output triangle face indices.
+ ********************************************************/
+extern "C" LIBHGP_EXPORT void HGP_Mesh_Make_Box(
+    const double& cx, const double& cy, const double& cz,
+    const double& wx, const double& wy, const double& wz,
+    Vector3d1& vecs,
+    Vector1i1& fi0, Vector1i1& fi1, Vector1i1& fi2)
+{
+    vecs.clear(); fi0.clear(); fi1.clear(); fi2.clear();
+
+    // 8 corners
+    double x0 = cx - wx, x1 = cx + wx;
+    double y0 = cy - wy, y1 = cy + wy;
+    double z0 = cz - wz, z1 = cz + wz;
+
+    vecs = {
+        {x0,y0,z0}, // 0
+        {x1,y0,z0}, // 1
+        {x1,y1,z0}, // 2
+        {x0,y1,z0}, // 3
+        {x0,y0,z1}, // 4
+        {x1,y0,z1}, // 5
+        {x1,y1,z1}, // 6
+        {x0,y1,z1}  // 7
+    };
+
+    // 6 faces × 2 triangles, outward normals
+    auto push = [&](int a,int b,int c){
+        fi0.push_back(a); fi1.push_back(b); fi2.push_back(c);
+    };
+    // bottom (-Z)
+    push(0,2,1); push(0,3,2);
+    // top (+Z)
+    push(4,5,6); push(4,6,7);
+    // front (-Y)
+    push(0,1,5); push(0,5,4);
+    // back (+Y)
+    push(2,3,7); push(2,7,6);
+    // left (-X)
+    push(0,4,7); push(0,7,3);
+    // right (+X)
+    push(1,2,6); push(1,6,5);
+}
+
+/********************************************************
+ * Function name : HGP_Mesh_Make_Cylinder
+ * Description   : Generate a closed triangulated cylinder mesh
+ *                 (polygonal prism approximation).
+ * Parameters    :
+ * @cx,cy,cz    : Center of the cylinder (mid-height).
+ * @radius      : Radius of the cylinder.
+ * @height      : Full height of the cylinder.
+ * @segments    : Number of sides of the prism (≥3, recommend 32).
+ * @vecs        : Output vertices.
+ * @fi0,fi1,fi2 : Output triangle face indices.
+ ********************************************************/
+extern "C" LIBHGP_EXPORT void HGP_Mesh_Make_Cylinder(
+    const double& cx, const double& cy, const double& cz,
+    const double& radius, const double& height,
+    const int& segments,
+    Vector3d1& vecs,
+    Vector1i1& fi0, Vector1i1& fi1, Vector1i1& fi2)
+{
+    vecs.clear(); fi0.clear(); fi1.clear(); fi2.clear();
+
+    if (segments < 3) return;
+
+    double half_h = height / 2.0;
+    const double PI2 = 2.0 * Math_PI;
+
+    // Bottom ring (indices 0 … segments-1)
+    // Top    ring (indices segments … 2*segments-1)
+    // Bottom center: index 2*segments
+    // Top    center: index 2*segments+1
+
+    for (int i = 0; i < segments; ++i) {
+        double angle = PI2 * i / segments;
+        double x = cx + radius * std::cos(angle);
+        double y = cy + radius * std::sin(angle);
+        vecs.push_back({x, y, cz - half_h});   // bottom ring
+    }
+    for (int i = 0; i < segments; ++i) {
+        double angle = PI2 * i / segments;
+        double x = cx + radius * std::cos(angle);
+        double y = cy + radius * std::sin(angle);
+        vecs.push_back({x, y, cz + half_h});   // top ring
+    }
+    int bot_center = (int)vecs.size();
+    vecs.push_back({cx, cy, cz - half_h});     // bottom center
+    int top_center = (int)vecs.size();
+    vecs.push_back({cx, cy, cz + half_h});     // top center
+
+    auto push = [&](int a, int b, int c) {
+        fi0.push_back(a); fi1.push_back(b); fi2.push_back(c);
+    };
+
+    for (int i = 0; i < segments; ++i) {
+        int next = (i + 1) % segments;
+
+        // Side: two triangles per segment (CCW from outside)
+        int b0 = i,      b1 = next;            // bottom ring
+        int t0 = i + segments, t1 = next + segments; // top ring
+        push(b0, b1, t1);
+        push(b0, t1, t0);
+
+        // Bottom cap (facing -Z, CW looking from below = CCW from outside)
+        push(bot_center, b1, b0);
+
+        // Top cap (facing +Z)
+        push(top_center, t0, t1);
+    }
+}
+
+/********************************************************
+ * Function name : HGP_Mesh_Make_Sphere
+ * Description   : Generate a closed UV sphere mesh.
+ * Parameters    :
+ * @cx,cy,cz    : Center of the sphere.
+ * @radius      : Radius.
+ * @rings       : Latitude subdivisions (≥2, recommend 16).
+ * @segments    : Longitude subdivisions (≥3, recommend 32).
+ * @vecs        : Output vertices.
+ * @fi0,fi1,fi2 : Output triangle face indices.
+ ********************************************************/
+extern "C" LIBHGP_EXPORT void HGP_Mesh_Make_Sphere(
+    const double& cx, const double& cy, const double& cz,
+    const double& radius,
+    const int& rings, const int& segments,
+    Vector3d1& vecs,
+    Vector1i1& fi0, Vector1i1& fi1, Vector1i1& fi2)
+{
+    vecs.clear(); fi0.clear(); fi1.clear(); fi2.clear();
+
+    if (rings < 2 || segments < 3) return;
+
+    const double PI  = Math_PI;
+    const double PI2 = 2.0 * Math_PI;
+
+    // South pole
+    int south = (int)vecs.size();
+    vecs.push_back({cx, cy, cz - radius});
+
+    // Intermediate rings (rings-1 latitude bands → rings-1 rows of vertices)
+    // ring r: theta from PI*(r+1)/(rings) going south to north
+    for (int r = 1; r < rings; ++r) {
+        double theta = PI * r / rings; // 0=north pole, PI=south pole
+        double z     = cz + radius * std::cos(theta);
+        double rxy   = radius * std::sin(theta);
+        for (int s = 0; s < segments; ++s) {
+            double phi = PI2 * s / segments;
+            double x   = cx + rxy * std::cos(phi);
+            double y   = cy + rxy * std::sin(phi);
+            vecs.push_back({x, y, z});
+        }
+    }
+
+    // North pole
+    int north = (int)vecs.size();
+    vecs.push_back({cx, cy, cz + radius});
+
+    auto push = [&](int a, int b, int c) {
+        fi0.push_back(a); fi1.push_back(b); fi2.push_back(c);
+    };
+
+    // Helper: vertex index in the ring grid
+    // ring r ∈ [1, rings-1], col s ∈ [0, segments-1]
+    auto ring_idx = [&](int r, int s) -> int {
+        return 1 + (r - 1) * segments + s % segments;
+    };
+
+    // South pole fan
+    for (int s = 0; s < segments; ++s)
+        push(south, ring_idx(1, s + 1), ring_idx(1, s));
+
+    // Middle quads
+    for (int r = 1; r < rings - 1; ++r) {
+        for (int s = 0; s < segments; ++s) {
+            int a = ring_idx(r,     s);
+            int b = ring_idx(r,     s + 1);
+            int c = ring_idx(r + 1, s + 1);
+            int d = ring_idx(r + 1, s);
+            push(a, b, c);
+            push(a, c, d);
+        }
+    }
+
+    // North pole fan
+    for (int s = 0; s < segments; ++s)
+        push(north, ring_idx(rings - 1, s), ring_idx(rings - 1, s + 1));
+}
+
+/********************************************************
+ * Function name : HGP_Mesh_Make_Cone
+ * Description   : Generate a closed triangulated cone mesh.
+ * Parameters    :
+ * @cx,cy,cz    : Center of the base circle.
+ * @radius      : Base radius.
+ * @height      : Height (apex is at cz + height).
+ * @segments    : Number of sides (≥3, recommend 32).
+ * @vecs        : Output vertices.
+ * @fi0,fi1,fi2 : Output triangle face indices.
+ ********************************************************/
+extern "C" LIBHGP_EXPORT void HGP_Mesh_Make_Cone(
+    const double& cx, const double& cy, const double& cz,
+    const double& radius, const double& height,
+    const int& segments,
+    Vector3d1& vecs,
+    Vector1i1& fi0, Vector1i1& fi1, Vector1i1& fi2)
+{
+    vecs.clear(); fi0.clear(); fi1.clear(); fi2.clear();
+
+    if (segments < 3) return;
+
+    const double PI2 = 2.0 * Math_PI;
+
+    // Base ring: indices 0 … segments-1
+    for (int i = 0; i < segments; ++i) {
+        double angle = PI2 * i / segments;
+        double x = cx + radius * std::cos(angle);
+        double y = cy + radius * std::sin(angle);
+        vecs.push_back({x, y, cz});
+    }
+
+    int base_center = (int)vecs.size();
+    vecs.push_back({cx, cy, cz});             // base center
+
+    int apex = (int)vecs.size();
+    vecs.push_back({cx, cy, cz + height});    // apex
+
+    auto push = [&](int a, int b, int c) {
+        fi0.push_back(a); fi1.push_back(b); fi2.push_back(c);
+    };
+
+    for (int i = 0; i < segments; ++i) {
+        int next = (i + 1) % segments;
+        // Base cap (facing -Z)
+        push(base_center, next, i);
+        // Lateral face
+        push(i, next, apex);
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+//  §2  CSG Boolean Operations
+// ────────────────────────────────────────────────────────────
+
+/********************************************************
+ * Function name : HGP_Mesh_CSG_Union
+ * Description   : Compute the boolean UNION of two closed meshes (A ∪ B).
+ *                 Uses EK corefinement for numerical robustness.
+ * Parameters    :
+ * @vecs_a/b    : Vertex coordinates of mesh A / B.
+ * @fi0/1/2_a/b : Triangle indices of mesh A / B.
+ * @vecs_out    : Output vertices of the result mesh.
+ * @fi0/1/2_out : Output triangle indices of the result mesh.
+ * Return        : true on success, false if meshes are incompatible.
+ ********************************************************/
+extern "C" LIBHGP_EXPORT bool HGP_Mesh_CSG_Union(
+    const Vector3d1& vecs_a, const Vector1i1& fi0_a, const Vector1i1& fi1_a, const Vector1i1& fi2_a,
+    const Vector3d1& vecs_b, const Vector1i1& fi0_b, const Vector1i1& fi1_b, const Vector1i1& fi2_b,
+    Vector3d1& vecs_out,
+    Vector1i1& fi0_out, Vector1i1& fi1_out, Vector1i1& fi2_out)
+{
+    Mesh ma = Build_Mesh_from_Vecs(vecs_a, fi0_a, fi1_a, fi2_a);
+    Mesh mb = Build_Mesh_from_Vecs(vecs_b, fi0_b, fi1_b, fi2_b);
+    Mesh result;
+
+    if (!CSG_Boolean_Op(ma, mb, 0, result)) {
+        std::cerr << "[HGP_Mesh_CSG_Union] corefinement failed." << std::endl;
+        return false;
+    }
+
+    Extract_Vecs_from_Mesh(result, vecs_out, fi0_out, fi1_out, fi2_out);
+    return true;
+}
+
+/********************************************************
+ * Function name : HGP_Mesh_CSG_Difference
+ * Description   : Compute the boolean DIFFERENCE of two closed meshes (A - B).
+ *                 Equivalent to "drilling / subtracting" B from A.
+ * Parameters    : (same convention as CSG_Union)
+ * Return        : true on success, false if meshes are incompatible.
+ ********************************************************/
+extern "C" LIBHGP_EXPORT bool HGP_Mesh_CSG_Difference(
+    const Vector3d1& vecs_a, const Vector1i1& fi0_a, const Vector1i1& fi1_a, const Vector1i1& fi2_a,
+    const Vector3d1& vecs_b, const Vector1i1& fi0_b, const Vector1i1& fi1_b, const Vector1i1& fi2_b,
+    Vector3d1& vecs_out,
+    Vector1i1& fi0_out, Vector1i1& fi1_out, Vector1i1& fi2_out)
+{
+    Mesh ma = Build_Mesh_from_Vecs(vecs_a, fi0_a, fi1_a, fi2_a);
+    Mesh mb = Build_Mesh_from_Vecs(vecs_b, fi0_b, fi1_b, fi2_b);
+    Mesh result;
+
+    if (!CSG_Boolean_Op(ma, mb, 1, result)) {
+        std::cerr << "[HGP_Mesh_CSG_Difference] corefinement failed." << std::endl;
+        return false;
+    }
+
+    Extract_Vecs_from_Mesh(result, vecs_out, fi0_out, fi1_out, fi2_out);
+    return true;
+}
+
+/********************************************************
+ * Function name : HGP_Mesh_CSG_Intersection
+ * Description   : Compute the boolean INTERSECTION of two closed meshes (A ∩ B).
+ * Parameters    : (same convention as CSG_Union)
+ * Return        : true on success, false if meshes are incompatible.
+ ********************************************************/
+extern "C" LIBHGP_EXPORT bool HGP_Mesh_CSG_Intersection(
+    const Vector3d1& vecs_a, const Vector1i1& fi0_a, const Vector1i1& fi1_a, const Vector1i1& fi2_a,
+    const Vector3d1& vecs_b, const Vector1i1& fi0_b, const Vector1i1& fi1_b, const Vector1i1& fi2_b,
+    Vector3d1& vecs_out,
+    Vector1i1& fi0_out, Vector1i1& fi1_out, Vector1i1& fi2_out)
+{
+    Mesh ma = Build_Mesh_from_Vecs(vecs_a, fi0_a, fi1_a, fi2_a);
+    Mesh mb = Build_Mesh_from_Vecs(vecs_b, fi0_b, fi1_b, fi2_b);
+    Mesh result;
+
+    if (!CSG_Boolean_Op(ma, mb, 2, result)) {
+        std::cerr << "[HGP_Mesh_CSG_Intersection] corefinement failed." << std::endl;
+        return false;
+    }
+
+    Extract_Vecs_from_Mesh(result, vecs_out, fi0_out, fi1_out, fi2_out);
+    return true;
 }

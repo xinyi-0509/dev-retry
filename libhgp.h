@@ -267,6 +267,52 @@ extern "C" LIBHGP_EXPORT void HGP_BSplineCurveFit(const Vector3d1 & samples, Vec
 extern "C" LIBHGP_EXPORT void HGP_Cut_Surface(const Vector3d1 & boundary, const Vector3d & inside_point, const char* full_path, char* output_path);
 extern "C" LIBHGP_EXPORT void HGP_Cut_Surface_by_Multi_Boundaries(const Vector3d2 & multi_boundary, const Vector3d & inside_point, const char* full_path, char* output_path);
 
+// ── CSG: Primitive Generators ────────────────────────────────────────────────
+// Generate a box (cuboid). cx/cy/cz = center, wx/wy/wz = half-extents.
+extern "C" LIBHGP_EXPORT void HGP_Mesh_Make_Box(
+    const double& cx, const double& cy, const double& cz,
+    const double& wx, const double& wy, const double& wz,
+    Vector3d1& vecs, Vector1i1& fi0, Vector1i1& fi1, Vector1i1& fi2);
+
+// Generate a cylinder. cx/cy/cz = center (mid-height), segments >= 3.
+extern "C" LIBHGP_EXPORT void HGP_Mesh_Make_Cylinder(
+    const double& cx, const double& cy, const double& cz,
+    const double& radius, const double& height, const int& segments,
+    Vector3d1& vecs, Vector1i1& fi0, Vector1i1& fi1, Vector1i1& fi2);
+
+// Generate a UV sphere. rings >= 2, segments >= 3.
+extern "C" LIBHGP_EXPORT void HGP_Mesh_Make_Sphere(
+    const double& cx, const double& cy, const double& cz,
+    const double& radius, const int& rings, const int& segments,
+    Vector3d1& vecs, Vector1i1& fi0, Vector1i1& fi1, Vector1i1& fi2);
+
+// Generate a cone. apex at (cx, cy, cz + height).
+extern "C" LIBHGP_EXPORT void HGP_Mesh_Make_Cone(
+    const double& cx, const double& cy, const double& cz,
+    const double& radius, const double& height, const int& segments,
+    Vector3d1& vecs, Vector1i1& fi0, Vector1i1& fi1, Vector1i1& fi2);
+
+// ── CSG: Boolean Operations ──────────────────────────────────────────────────
+// All operations require closed, orientable, non-self-intersecting meshes.
+// Returns true on success.
+
+// Union: result = A ∪ B
+extern "C" LIBHGP_EXPORT bool HGP_Mesh_CSG_Union(
+    const Vector3d1& vecs_a, const Vector1i1& fi0_a, const Vector1i1& fi1_a, const Vector1i1& fi2_a,
+    const Vector3d1& vecs_b, const Vector1i1& fi0_b, const Vector1i1& fi1_b, const Vector1i1& fi2_b,
+    Vector3d1& vecs_out, Vector1i1& fi0_out, Vector1i1& fi1_out, Vector1i1& fi2_out);
+
+// Difference: result = A - B  (drill B into A)
+extern "C" LIBHGP_EXPORT bool HGP_Mesh_CSG_Difference(
+    const Vector3d1& vecs_a, const Vector1i1& fi0_a, const Vector1i1& fi1_a, const Vector1i1& fi2_a,
+    const Vector3d1& vecs_b, const Vector1i1& fi0_b, const Vector1i1& fi1_b, const Vector1i1& fi2_b,
+    Vector3d1& vecs_out, Vector1i1& fi0_out, Vector1i1& fi1_out, Vector1i1& fi2_out);
+
+// Intersection: result = A ∩ B
+extern "C" LIBHGP_EXPORT bool HGP_Mesh_CSG_Intersection(
+    const Vector3d1& vecs_a, const Vector1i1& fi0_a, const Vector1i1& fi1_a, const Vector1i1& fi2_a,
+    const Vector3d1& vecs_b, const Vector1i1& fi0_b, const Vector1i1& fi1_b, const Vector1i1& fi2_b,
+    Vector3d1& vecs_out, Vector1i1& fi0_out, Vector1i1& fi1_out, Vector1i1& fi2_out);
 
 #pragma endregion
 

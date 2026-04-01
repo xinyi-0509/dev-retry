@@ -254,6 +254,63 @@ def repair_mesh(vertices, fi0, fi1, fi2):
           f"(非流形={len(bad_faces)}, 蝴蝶结={len(bowtie_bad)})")
     return unique_verts, final_fi0, final_fi1, final_fi2
 
+def _normalize_mesh(vertices, fi0, fi1, fi2,
+                    target_size: float = 2.0):
+    """
+    将网格平移到原点并等比缩放至目标尺寸。
+
+    target_size : 归一化后包围盒最长边的长度（默认 2.0，
+                  对应 Three.js 场景里约 [-1, 1] 的舒适视野）
+
+    返回变换后的 (vertices, fi0, fi1, fi2)（fi* 不变）
+    """
+    if not vertices:
+        return vertices, fi0, fi1, fi2
+
+    xs = [v[0] for v in vertices]
+    ys = [v[1] for v in vertices]
+    zs = [v[2] for v in vertices]
+
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    min_z, max_z = min(zs), max(zs)
+
+    # 中心点
+    cx = (min_x + max_x) / 2.0
+    cy = (min_y + max_y) / 2.0
+    cz = (min_z + max_z) / 2.0
+
+    # 等比缩放系数（最长边 → target_size）
+    span = max(max_x - min_x, max_y - min_y, max_z - min_z)
+    scale = (target_size / span) if span > 1e-12 else 1.0
+
+    new_verts = [
+        [(v[0] - cx) * scale,
+         (v[1] - cy) * scale,
+         (v[2] - cz) * scale]
+        for v in vertices
+    ]
+    return new_verts, fi0, fi1, fi2
+
+def _center_mesh(vertices, fi0, fi1, fi2):
+    """
+    将网格包围盒中心平移到原点。
+    仅做平移，不缩放——保留所有实际距离/角度信息。
+    返回平移后的 (vertices, fi0, fi1, fi2)（fi* 不变）。
+    """
+    if not vertices:
+        return vertices, fi0, fi1, fi2
+
+    xs = [v[0] for v in vertices]
+    ys = [v[1] for v in vertices]
+    zs = [v[2] for v in vertices]
+
+    cx = (min(xs) + max(xs)) / 2.0
+    cy = (min(ys) + max(ys)) / 2.0
+    cz = (min(zs) + max(zs)) / 2.0
+
+    new_verts = [[v[0] - cx, v[1] - cy, v[2] - cz] for v in vertices]
+    return new_verts, fi0, fi1, fi2
 
 def save_mesh(vertices, fi0, fi1, fi2, repair: bool = False) -> str:
     if repair:
@@ -318,82 +375,39 @@ def parse_obj_string(obj_str: str):
     return verts, fi0, fi1, fi2
 
 
-# ── CSG 工具：生成圆柱网格（纯 Python）─────────
+# ── CSG 工具：归一化法线 ────────────────────────
 
-def _make_cylinder_mesh(center, axis_norm, radius, depth, segments=48):
-    """生成圆柱三角网格，轴线方向为 axis_norm（已归一化）"""
-    import math
-    ax, ay, az = axis_norm
-    tx, ty, tz = (1.0, 0.0, 0.0) if abs(ax) < 0.9 else (0.0, 1.0, 0.0)
-    ux = ay*tz - az*ty; uy = az*tx - ax*tz; uz = ax*ty - ay*tx
-    ul = math.sqrt(ux*ux + uy*uy + uz*uz)
-    ux /= ul; uy /= ul; uz /= ul
-    vx = ay*uz - az*uy; vy = az*ux - ax*uz; vz = ax*uy - ay*ux
-
-    cx, cy, cz = center
-    b0x = cx - ax*depth/2; b0y = cy - ay*depth/2; b0z = cz - az*depth/2
-    t0x = cx + ax*depth/2; t0y = cy + ay*depth/2; t0z = cz + az*depth/2
-
-    verts = [[b0x, b0y, b0z], [t0x, t0y, t0z]]   # idx 0=底心, 1=顶心
-    for i in range(segments):
-        angle = 2 * math.pi * i / segments
-        dx = radius*(math.cos(angle)*ux + math.sin(angle)*vx)
-        dy = radius*(math.cos(angle)*uy + math.sin(angle)*vy)
-        dz = radius*(math.cos(angle)*uz + math.sin(angle)*vz)
-        verts.append([b0x+dx, b0y+dy, b0z+dz])   # 底圈
-    for i in range(segments):
-        angle = 2 * math.pi * i / segments
-        dx = radius*(math.cos(angle)*ux + math.sin(angle)*vx)
-        dy = radius*(math.cos(angle)*uy + math.sin(angle)*vy)
-        dz = radius*(math.cos(angle)*uz + math.sin(angle)*vz)
-        verts.append([t0x+dx, t0y+dy, t0z+dz])   # 顶圈
-
-    fi0, fi1, fi2 = [], [], []
-    for i in range(segments):
-        ni = (i + 1) % segments
-        fi0.append(0);          fi1.append(2+ni);          fi2.append(2+i)           # 底面
-        fi0.append(1);          fi1.append(2+segments+i);  fi2.append(2+segments+ni) # 顶面
-        b_i, b_ni = 2+i, 2+ni
-        t_i, t_ni = 2+segments+i, 2+segments+ni
-        fi0.append(b_i);  fi1.append(b_ni); fi2.append(t_i)   # 侧面 △1
-        fi0.append(b_ni); fi1.append(t_ni); fi2.append(t_i)   # 侧面 △2
-    return verts, fi0, fi1, fi2
+def _normalize(v: list[float]) -> list[float]:
+    nx, ny, nz = v
+    length = math.sqrt(nx*nx + ny*ny + nz*nz)
+    if length < 1e-9:
+        raise HTTPException(status_code=400, detail="法线向量长度为零")
+    return [nx/length, ny/length, nz/length]
 
 
 def _do_boolean(verts_a, fi0_a, fi1_a, fi2_a,
                 verts_b, fi0_b, fi1_b, fi2_b,
                 operation: str):
-    """调用 trimesh 执行布尔运算，返回 (verts, fi0, fi1, fi2)"""
-    try:
-        import trimesh, numpy as np
-    except ImportError:
-        raise HTTPException(status_code=500,
-            detail="需要安装 trimesh：pip install trimesh")
-
-    def to_tm(verts, fi0, fi1, fi2):
-        v = __import__('numpy').array(verts, dtype=float)
-        f = __import__('numpy').column_stack([fi0, fi1, fi2])
-        return trimesh.Trimesh(vertices=v, faces=f, process=False)
-
-    mesh_a = to_tm(verts_a, fi0_a, fi1_a, fi2_a)
-    mesh_b = to_tm(verts_b, fi0_b, fi1_b, fi2_b)
-    try:
-        if   operation == "difference":   result = trimesh.boolean.difference([mesh_a, mesh_b])
-        elif operation == "union":        result = trimesh.boolean.union([mesh_a, mesh_b])
-        elif operation == "intersection": result = trimesh.boolean.intersection([mesh_a, mesh_b])
-        else: raise HTTPException(status_code=400, detail=f"未知操作: {operation}")
-    except HTTPException:
-        raise
-    except Exception as e:
+    """调用 hgp_py CSG 布尔运算，返回 (verts, fi0, fi1, fi2)"""
+    if operation == "union":
+        ok, verts_out, fi0_out, fi1_out, fi2_out = hgp_py.HGP_Mesh_CSG_Union(
+            verts_a, fi0_a, fi1_a, fi2_a,
+            verts_b, fi0_b, fi1_b, fi2_b)
+    elif operation == "difference":
+        ok, verts_out, fi0_out, fi1_out, fi2_out = hgp_py.HGP_Mesh_CSG_Difference(
+            verts_a, fi0_a, fi1_a, fi2_a,
+            verts_b, fi0_b, fi1_b, fi2_b)
+    elif operation == "intersection":
+        ok, verts_out, fi0_out, fi1_out, fi2_out = hgp_py.HGP_Mesh_CSG_Intersection(
+            verts_a, fi0_a, fi1_a, fi2_a,
+            verts_b, fi0_b, fi1_b, fi2_b)
+    else:
+        raise HTTPException(status_code=400, detail=f"未知操作: {operation}，"
+                            "合法值为 difference / union / intersection")
+    if not ok or not verts_out:
         raise HTTPException(status_code=422,
-            detail=f"布尔运算失败：{e}\n请确认两个网格均为封闭流形且存在交叠区域。")
-    if result is None or len(result.vertices) == 0:
-        raise HTTPException(status_code=422, detail="布尔运算结果为空（两网格可能不相交）")
-
-    verts_out = result.vertices.tolist()
-    faces_out = result.faces.tolist()
-    return verts_out, [f[0] for f in faces_out], [f[1] for f in faces_out], [f[2] for f in faces_out]
-
+            detail="布尔运算失败或结果为空，请确认两个网格均为封闭流形且存在交叠区域。")
+    return verts_out, fi0_out, fi1_out, fi2_out
 
 # ════════════════════════════════════════════════
 # 接口 1：3D 凸包
@@ -416,6 +430,8 @@ async def upload_obj(file: UploadFile = File(...)):
     verts, fi0, fi1, fi2 = parse_obj_string(text)
     if not verts or not fi0:
         raise HTTPException(status_code=400, detail="OBJ 文件解析失败或不含三角面片")
+    #verts, fi0, fi1, fi2 = _normalize_mesh(verts, fi0, fi1, fi2, target_size=2.0) # 归一化到 [-1,1] 范围，适合直接预览，但会丢失原始尺寸信息
+    verts, fi0, fi1, fi2 = _center_mesh(verts, fi0, fi1, fi2)  # 仅平移到原点，保留尺寸信息，适合后续计算（如测地线）使用
     mesh_id = save_mesh(verts, fi0, fi1, fi2, repair=True)
     return mesh_response(verts, fi0, fi1, fi2, mesh_id)
 
@@ -499,12 +515,20 @@ def geodesic_distance(req: GeodesicRequest):
 @app.post("/api/slicer")
 def slicer(req: SlicerRequest):
     mesh_path = get_mesh_path(req.mesh_id, ext="off")
-    offsetses, offsets = hgp_py.HGP_Slicer_Mesh(mesh_path, req.plane_normal, req.plane_ds)
+    offsetses, offsets = hgp_py.HGP_Slicer_Mesh(
+        mesh_path, req.plane_normal, req.plane_ds
+    )
     print(f"plane_ds: {req.plane_ds}")
-    print(f"offsetses: {len(offsetses)} 平面, 各段数: {[len(p) for p in offsetses]}")
+    print(f"offsetses 长度: {len(offsetses)}, 各平面段数: {[len(p) for p in offsetses]}")
+    print(f"offsets 长度: {len(offsets)}")
     return {
         "slices": [
-            {"contours": [[[p[0],p[1],p[2]] for p in seg] for seg in plane_contours]}
+            {
+                "contours": [
+                    [[p[0], p[1], p[2]] for p in seg]
+                    for seg in plane_contours
+                ]
+            }
             for plane_contours in offsetses
         ]
     }
@@ -625,14 +649,32 @@ def polygon_sampling_2d_regular(req: Polygon2DSamplingRequest):
 @app.post("/api/csg/hole")
 def csg_hole(req: CSGHoleRequest):
     """在主体网格上打一个圆柱孔（difference 布尔运算）"""
-    nx, ny, nz = req.normal
-    length = math.sqrt(nx*nx + ny*ny + nz*nz)
-    if length < 1e-9:
-        raise HTTPException(status_code=400, detail="法线向量长度为零")
-    axis = [nx/length, ny/length, nz/length]
+    ax, ay, az = _normalize(req.normal)
 
-    cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = _make_cylinder_mesh(
-        req.center, axis, req.radius, req.depth * 1.05, segments=48)
+    # 用 hgp_py 生成圆柱工具体：沿默认 Z 轴生成，中心在 center
+    # depth * 1.05 保证圆柱比主体厚，避免共面导致布尔失败
+    cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = hgp_py.HGP_Mesh_Make_Cylinder(
+        req.center[0], req.center[1], req.center[2],
+        req.radius, req.depth * 1.05, 48)
+
+    # 若轴线不是 Z 轴，需把圆柱旋转到目标法线方向
+    # hgp_py 的圆柱默认沿 Z 轴；当法线非 Z 时用 HGP_Rotation_Obj 旋转
+    # 实现：先把圆柱保存为临时 OBJ，旋转后重新读入
+    z_axis = [0.0, 0.0, 1.0]
+    dot = ax*z_axis[0] + ay*z_axis[1] + az*z_axis[2]   # cos(θ)
+    if abs(dot - 1.0) > 1e-6:
+        # 旋转轴 = Z × axis_norm（叉积）
+        rx = z_axis[1]*az - z_axis[2]*ay
+        ry = z_axis[2]*ax - z_axis[0]*az
+        rz = z_axis[0]*ay - z_axis[1]*ax
+        rl = math.sqrt(rx*rx + ry*ry + rz*rz)
+        if rl > 1e-9:
+            angle = math.acos(max(-1.0, min(1.0, dot)))
+            rot_axis = [rx/rl, ry/rl, rz/rl]
+            tmp_id  = save_mesh(cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2, repair=False)
+            tmp_obj = get_mesh_path(tmp_id, ext="obj")
+            hgp_py.HGP_Rotation_Obj(tmp_obj, angle, rot_axis)
+            cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = _load_mesh_from_obj(tmp_obj)
 
     mesh_path = get_mesh_path(req.mesh_id)
     verts_a, fi0_a, fi1_a, fi2_a = _load_mesh_from_obj(mesh_path)
@@ -662,12 +704,36 @@ def csg_boolean(req: CSGBooleanRequest):
 @app.post("/api/csg/preview_cylinder")
 def csg_preview_cylinder(req: CSGPreviewRequest):
     """返回工具圆柱的网格，供前端半透明预览（不修改主体网格）"""
-    nx, ny, nz = req.normal
-    length = math.sqrt(nx*nx + ny*ny + nz*nz)
-    if length < 1e-9:
-        raise HTTPException(status_code=400, detail="法线向量长度为零")
-    axis = [nx/length, ny/length, nz/length]
-    cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = _make_cylinder_mesh(
-        req.center, axis, req.radius, req.depth, segments=48)
+    ax, ay, az = _normalize(req.normal)
+
+    cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = hgp_py.HGP_Mesh_Make_Cylinder(
+        req.center[0], req.center[1], req.center[2],
+        req.radius, req.depth, 48)
+
+    z_axis = [0.0, 0.0, 1.0]
+    dot = ax*z_axis[0] + ay*z_axis[1] + az*z_axis[2]
+    if abs(dot - 1.0) > 1e-6:
+        rx = z_axis[1]*az - z_axis[2]*ay
+        ry = z_axis[2]*ax - z_axis[0]*az
+        rz = z_axis[0]*ay - z_axis[1]*ax
+        rl = math.sqrt(rx*rx + ry*ry + rz*rz)
+        if rl > 1e-9:
+            angle = math.acos(max(-1.0, min(1.0, dot)))
+            rot_axis = [rx/rl, ry/rl, rz/rl]
+            tmp_id  = save_mesh(cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2, repair=False)
+            tmp_obj = get_mesh_path(tmp_id, ext="obj")
+            hgp_py.HGP_Rotation_Obj(tmp_obj, angle, rot_axis)
+            cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = _load_mesh_from_obj(tmp_obj)
+
     mesh_id = save_mesh(cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2, repair=False)
     return mesh_response(cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2, mesh_id)
+# ════════════════════════════════════════════════
+# 接口：按 mesh_id 重新加载网格（用于撤销）
+# ════════════════════════════════════════════════
+
+@app.post("/api/mesh/reload")
+def mesh_reload(req: MeshIdRequest):
+    """按 mesh_id 从缓存重新读取并返回网格数据（供前端撤销使用）"""
+    mesh_path = get_mesh_path(req.mesh_id)
+    verts, fi0, fi1, fi2 = _load_mesh_from_obj(mesh_path)
+    return mesh_response(verts, fi0, fi1, fi2, req.mesh_id)

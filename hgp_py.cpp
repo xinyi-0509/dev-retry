@@ -1828,4 +1828,175 @@ PYBIND11_MODULE(hgp_py, m) {
         }, py::arg("vecs"),
            py::arg("face_id_0"), py::arg("face_id_1"), py::arg("face_id_2"),
         "网格曲率C1（分量传参）。返回 (max_curs, min_curs)。");
+        // ════════════════════════════════════════════════════
+    // ── CSG: Primitive Generators
+    // ════════════════════════════════════════════════════
+
+    // HGP_Mesh_Make_Box
+    // 返回 (vecs, fi0, fi1, fi2)
+    m.def("HGP_Mesh_Make_Box",
+        [](double cx, double cy, double cz,
+           double wx, double wy, double wz)
+           -> std::tuple<std::vector<std::vector<double>>,
+                         std::vector<int>,
+                         std::vector<int>,
+                         std::vector<int>> {
+            Vector3d1 vecs;
+            Vector1i1 fi0, fi1, fi2;
+            HGP_Mesh_Make_Box(cx, cy, cz, wx, wy, wz, vecs, fi0, fi1, fi2);
+            return {from_vec3d1(vecs), fi0, fi1, fi2};
+        },
+        py::arg("cx"), py::arg("cy"), py::arg("cz"),
+        py::arg("wx"), py::arg("wy"), py::arg("wz"),
+        "生成长方体网格。(cx,cy,cz)=中心，(wx,wy,wz)=各轴半长。\n"
+        "返回 (vecs, fi0, fi1, fi2)。");
+
+    // HGP_Mesh_Make_Cylinder
+    m.def("HGP_Mesh_Make_Cylinder",
+        [](double cx, double cy, double cz,
+           double radius, double height, int segments)
+           -> std::tuple<std::vector<std::vector<double>>,
+                         std::vector<int>,
+                         std::vector<int>,
+                         std::vector<int>> {
+            Vector3d1 vecs;
+            Vector1i1 fi0, fi1, fi2;
+            HGP_Mesh_Make_Cylinder(cx, cy, cz, radius, height, segments,
+                                   vecs, fi0, fi1, fi2);
+            return {from_vec3d1(vecs), fi0, fi1, fi2};
+        },
+        py::arg("cx"), py::arg("cy"), py::arg("cz"),
+        py::arg("radius"), py::arg("height"),
+        py::arg("segments") = 32,
+        "生成圆柱体网格。(cx,cy,cz)=中轴中点，segments 建议 >=32。\n"
+        "返回 (vecs, fi0, fi1, fi2)。");
+
+    // HGP_Mesh_Make_Sphere
+    m.def("HGP_Mesh_Make_Sphere",
+        [](double cx, double cy, double cz,
+           double radius, int rings, int segments)
+           -> std::tuple<std::vector<std::vector<double>>,
+                         std::vector<int>,
+                         std::vector<int>,
+                         std::vector<int>> {
+            Vector3d1 vecs;
+            Vector1i1 fi0, fi1, fi2;
+            HGP_Mesh_Make_Sphere(cx, cy, cz, radius, rings, segments,
+                                 vecs, fi0, fi1, fi2);
+            return {from_vec3d1(vecs), fi0, fi1, fi2};
+        },
+        py::arg("cx"), py::arg("cy"), py::arg("cz"),
+        py::arg("radius"),
+        py::arg("rings")    = 16,
+        py::arg("segments") = 32,
+        "生成 UV 球体网格。rings>=2，segments>=3。\n"
+        "返回 (vecs, fi0, fi1, fi2)。");
+
+    // HGP_Mesh_Make_Cone
+    m.def("HGP_Mesh_Make_Cone",
+        [](double cx, double cy, double cz,
+           double radius, double height, int segments)
+           -> std::tuple<std::vector<std::vector<double>>,
+                         std::vector<int>,
+                         std::vector<int>,
+                         std::vector<int>> {
+            Vector3d1 vecs;
+            Vector1i1 fi0, fi1, fi2;
+            HGP_Mesh_Make_Cone(cx, cy, cz, radius, height, segments,
+                               vecs, fi0, fi1, fi2);
+            return {from_vec3d1(vecs), fi0, fi1, fi2};
+        },
+        py::arg("cx"), py::arg("cy"), py::arg("cz"),
+        py::arg("radius"), py::arg("height"),
+        py::arg("segments") = 32,
+        "生成圆锥体网格。顶点在 (cx, cy, cz+height)，底面圆心在 (cx,cy,cz)。\n"
+        "返回 (vecs, fi0, fi1, fi2)。");
+
+    // ════════════════════════════════════════════════════
+    // ── CSG: Boolean Operations
+    // ════════════════════════════════════════════════════
+
+    // HGP_Mesh_CSG_Union  —  A ∪ B
+    m.def("HGP_Mesh_CSG_Union",
+        [](const std::vector<std::vector<double>>& vecs_a,
+           const std::vector<int>& fi0_a,
+           const std::vector<int>& fi1_a,
+           const std::vector<int>& fi2_a,
+           const std::vector<std::vector<double>>& vecs_b,
+           const std::vector<int>& fi0_b,
+           const std::vector<int>& fi1_b,
+           const std::vector<int>& fi2_b)
+           -> std::tuple<bool,
+                         std::vector<std::vector<double>>,
+                         std::vector<int>,
+                         std::vector<int>,
+                         std::vector<int>> {
+            Vector3d1 vecs_out;
+            Vector1i1 fi0_out, fi1_out, fi2_out;
+            bool ok = HGP_Mesh_CSG_Union(
+                to_vec3d1(vecs_a), fi0_a, fi1_a, fi2_a,
+                to_vec3d1(vecs_b), fi0_b, fi1_b, fi2_b,
+                vecs_out, fi0_out, fi1_out, fi2_out);
+            return {ok, from_vec3d1(vecs_out), fi0_out, fi1_out, fi2_out};
+        },
+        py::arg("vecs_a"), py::arg("fi0_a"), py::arg("fi1_a"), py::arg("fi2_a"),
+        py::arg("vecs_b"), py::arg("fi0_b"), py::arg("fi1_b"), py::arg("fi2_b"),
+        "CSG 并集 A ∪ B。输入网格须为封闭流形。\n"
+        "返回 (ok, vecs, fi0, fi1, fi2)。ok=False 时结果无效。");
+
+    // HGP_Mesh_CSG_Difference  —  A - B
+    m.def("HGP_Mesh_CSG_Difference",
+        [](const std::vector<std::vector<double>>& vecs_a,
+           const std::vector<int>& fi0_a,
+           const std::vector<int>& fi1_a,
+           const std::vector<int>& fi2_a,
+           const std::vector<std::vector<double>>& vecs_b,
+           const std::vector<int>& fi0_b,
+           const std::vector<int>& fi1_b,
+           const std::vector<int>& fi2_b)
+           -> std::tuple<bool,
+                         std::vector<std::vector<double>>,
+                         std::vector<int>,
+                         std::vector<int>,
+                         std::vector<int>> {
+            Vector3d1 vecs_out;
+            Vector1i1 fi0_out, fi1_out, fi2_out;
+            bool ok = HGP_Mesh_CSG_Difference(
+                to_vec3d1(vecs_a), fi0_a, fi1_a, fi2_a,
+                to_vec3d1(vecs_b), fi0_b, fi1_b, fi2_b,
+                vecs_out, fi0_out, fi1_out, fi2_out);
+            return {ok, from_vec3d1(vecs_out), fi0_out, fi1_out, fi2_out};
+        },
+        py::arg("vecs_a"), py::arg("fi0_a"), py::arg("fi1_a"), py::arg("fi2_a"),
+        py::arg("vecs_b"), py::arg("fi0_b"), py::arg("fi1_b"), py::arg("fi2_b"),
+        "CSG 差集 A - B（从 A 中挖去 B）。输入网格须为封闭流形。\n"
+        "返回 (ok, vecs, fi0, fi1, fi2)。");
+
+    // HGP_Mesh_CSG_Intersection  —  A ∩ B
+    m.def("HGP_Mesh_CSG_Intersection",
+        [](const std::vector<std::vector<double>>& vecs_a,
+           const std::vector<int>& fi0_a,
+           const std::vector<int>& fi1_a,
+           const std::vector<int>& fi2_a,
+           const std::vector<std::vector<double>>& vecs_b,
+           const std::vector<int>& fi0_b,
+           const std::vector<int>& fi1_b,
+           const std::vector<int>& fi2_b)
+           -> std::tuple<bool,
+                         std::vector<std::vector<double>>,
+                         std::vector<int>,
+                         std::vector<int>,
+                         std::vector<int>> {
+            Vector3d1 vecs_out;
+            Vector1i1 fi0_out, fi1_out, fi2_out;
+            bool ok = HGP_Mesh_CSG_Intersection(
+                to_vec3d1(vecs_a), fi0_a, fi1_a, fi2_a,
+                to_vec3d1(vecs_b), fi0_b, fi1_b, fi2_b,
+                vecs_out, fi0_out, fi1_out, fi2_out);
+            return {ok, from_vec3d1(vecs_out), fi0_out, fi1_out, fi2_out};
+        },
+        py::arg("vecs_a"), py::arg("fi0_a"), py::arg("fi1_a"), py::arg("fi2_a"),
+        py::arg("vecs_b"), py::arg("fi0_b"), py::arg("fi1_b"), py::arg("fi2_b"),
+        "CSG 交集 A ∩ B。输入网格须为封闭流形。\n"
+        "返回 (ok, vecs, fi0, fi1, fi2)。");    
 }

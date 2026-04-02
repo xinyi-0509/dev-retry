@@ -715,7 +715,7 @@ def csg_hole(req: CSGHoleRequest):
     """在主体网格上打一个圆柱孔（difference 布尔运算）"""
     ax, ay, az = _normalize(req.normal)
     mesh_path = get_mesh_path(req.mesh_id)
-
+    off_path  = get_mesh_path(req.mesh_id, ext="off")  # .off，用于 Surface_mesh 射线检测
     # ── 包围盒对角线 ──────────────────────────────
     verts_a, fi0_a, fi1_a, fi2_a = _load_mesh_from_obj(mesh_path)
     min_c, max_c = hgp_py.HGP_3D_Mesh_Boundingbox_C2(verts_a)
@@ -732,11 +732,11 @@ def csg_hole(req: CSGHoleRequest):
                req.center[2] - az*EPS_OFFSET]
     ray_dir = [-ax, -ay, -az]
     hits = hgp_py.HGP_3D_Intersection_Rays_Mesh_Vector3d(
-        [shifted], [ray_dir], mesh_path)
+        [shifted], [ray_dir], off_path)
     print(f"hits: {hits}")
     print(f"hits type: {type(hits)}")
     print(f"hits length: {len(hits) if hits else 'None/Empty'}")
-    print(f"s h i fted: {shifted}")
+    print(f"shifted: {shifted}")
     thickness = None
     if hits:
         h = hits[0]
@@ -757,7 +757,7 @@ def csg_hole(req: CSGHoleRequest):
             print(f"[csg_hole] 盲孔: depth={req.depth:.4f} < thickness={thickness:.4f}")
 
     cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = _make_oriented_cylinder(
-        req.center, [ax, ay, az], req.radius,
+        req.center, ray_dir, req.radius,
         inward_ext=inward_ext,
         outward_ext=outward_ext)
 
@@ -792,9 +792,9 @@ def csg_preview_cylinder(req: CSGPreviewRequest):
       - outward_ext = 0（出射侧不超出，预览只展示钻入部分）
     """
     ax, ay, az = _normalize(req.normal)
-    ax, ay, az = -ax, -ay, -az
+    ray_dir = [-ax, -ay, -az]
     cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = _make_oriented_cylinder(
-        req.center, [ax, ay, az], req.radius,
+        req.center, ray_dir, req.radius,
         inward_ext=req.depth,
         outward_ext=0.0)
     mesh_id, cyl_verts, cyl_fi0, cyl_fi1, cyl_fi2 = save_mesh(
